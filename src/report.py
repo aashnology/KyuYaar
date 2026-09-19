@@ -50,7 +50,7 @@ def build_report(inv, decision_set, chosen_id=None, note="") -> str:
     lines += [
         "", "---",
         f"Investigation mode: {inv.mode}"
-        + (f" ({inv.model})" if inv.model else "")
+        + (f" ({inv.provider}, {inv.model})" if inv.model else "")
         + f". Model-written passages blocked by the numeric guardrail: {len(inv.guardrail_blocks)}.",
         "Every figure above comes from a deterministic calculation in this repository; "
         "the model chose which analyses to run and wrote readouts that were checked against them.",

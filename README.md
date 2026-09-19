@@ -23,7 +23,19 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-With `ANTHROPIC_API_KEY` set, the investigation is driven by Claude (model overridable with `KYUYAAR_MODEL`). Without a key the app runs the same tools on a fixed plan and narrates with deterministic templates, so it works offline.
+The investigation can be driven by a live model or run offline:
+
+| Setup | Provider |
+|---|---|
+| `GEMINI_API_KEY` set (free tier from Google AI Studio works) | Gemini, default model `gemini-flash-latest` |
+| `ANTHROPIC_API_KEY` set | Claude, default model `claude-sonnet-5` |
+| neither | offline: the same tools on a fixed plan, narrated by deterministic templates |
+
+`KYUYAAR_PROVIDER` (`gemini` or `anthropic`) forces the choice when both keys are present, and `KYUYAAR_MODEL` overrides the default model. If a live call fails midway (quota, network), the investigation finishes in offline mode and says so. The tools, evidence, guardrail and decision options are identical across providers; only the model behind the plan and readouts changes.
+
+```bash
+python scripts/check_live.py      # one real investigation; reports whether the model drove it
+```
 
 ```bash
 python scripts/verify_layer1.py   # Layer 1 output on the dataset
@@ -57,7 +69,7 @@ On the synthetic dataset (a 45% cut to paid marketing in North and a 10% price r
 
 ## Known limits
 
-- The live Claude path has been exercised against a fake client in tests, not against the real API in development. Run it once with a key before relying on it.
+- Both live provider paths (Gemini over REST, Claude via the SDK) are tested against scripted fake transports, not the real APIs, during development. Run `scripts/check_live.py` once with a key before relying on them.
 - Evidence is association, not proof of cause. A driver and an order change in the same month cannot rule out another simultaneous change; every supported finding says so.
 - The two effects overlap in North x Electronics and the data cannot separate their interaction. Options say so, and impact estimates for the two are not additive.
 - One dataset, one investigation type (why did revenue change). Customer segment and channel are not exposed to the orchestrator: small segments need a significance test on the association itself before they can be ranked reliably.

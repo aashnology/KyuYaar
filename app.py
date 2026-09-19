@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from data_loader import load_data  # noqa: E402
 from decisions import build_options  # noqa: E402
 from narration import label  # noqa: E402
-from orchestrator import DEFAULT_MODEL, investigate, make_client  # noqa: E402
+from orchestrator import investigate, make_client  # noqa: E402
 from report import build_report  # noqa: E402
 from toolkit import Toolkit  # noqa: E402
 
@@ -168,7 +168,7 @@ def render_event(ev):
     """Render one orchestrator event on the progress screen."""
     kind, data = ev.kind, ev.data
     if kind == "start":
-        engine = f"Claude ({data['model']})" if data["mode"] == "live" else "offline scripted plan"
+        engine = f"{data['display']} ({data['model']})" if data["mode"] == "live" else "offline scripted plan"
         st.caption(f"Engine: {engine}")
     elif kind == "plan":
         st.markdown(f"**Plan.** {data['text']}")
@@ -181,7 +181,7 @@ def render_event(ev):
         } for e in data["items"]]
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     elif kind == "narration":
-        who = "Claude" if data["source"] == "llm" else "generated from the evidence"
+        who = "written by the model, figures checked" if data["source"] == "llm" else "generated from the evidence"
         st.markdown(f"> {data['text']}")
         st.caption(f"Readout · {who}")
     elif kind == "guardrail":
@@ -203,10 +203,10 @@ def sidebar(client):
         st.divider()
         options = ["Offline (scripted plan)"]
         if client is not None:
-            options.insert(0, f"Live LLM ({os.environ.get('KYUYAAR_MODEL', DEFAULT_MODEL)})")
+            options.insert(0, f"Live LLM · {client.display} ({client.model})")
         st.radio("Investigation engine", options, key="engine")
         if client is None:
-            st.caption("No `ANTHROPIC_API_KEY` found, so only the offline plan is available.")
+            st.caption("No `GEMINI_API_KEY` or `ANTHROPIC_API_KEY` found, so only the offline plan is available.")
         with st.expander("What do the strength labels mean?"):
             st.markdown(
                 "**Strong / moderate / weak** rate how well the data supports a finding. "
@@ -309,7 +309,7 @@ def screen_evidence(orders):
     st.header("Evidence")
     st.info(inv.summary)
     st.caption(
-        "Summary written by Claude and checked against the evidence."
+        "Summary written by the model and checked against the evidence."
         if inv.summary_source == "llm"
         else "Summary generated directly from the evidence objects."
     )

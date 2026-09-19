@@ -19,10 +19,10 @@ from typing import Iterator
 
 from evidence import Evidence
 from guardrail import check_text
+from llm import LLMError, ToolResult, as_adapter, make_client  # noqa: F401  (make_client re-exported)
 from narration import build_summary, narrate_step
 from toolkit import Toolkit, ToolError, evidence_to_payload
 
-DEFAULT_MODEL = "claude-sonnet-5"
 MAX_TURNS = 10
 
 # The standard investigation. In live mode the model is expected to cover all
@@ -77,6 +77,7 @@ class Investigation:
     question: str
     mode: str                              # "live" | "offline"
     model: str | None
+    provider: str | None
     evidence: list[Evidence]
     steps: list[dict]
     summary: str
@@ -88,6 +89,7 @@ class Investigation:
 class _State:
     def __init__(self, question, mode, model):
         self.question, self.mode, self.model = question, mode, model
+        self.provider = None
         self.evidence: dict[str, Evidence] = {}
         self.steps: list[dict] = []
         self.step_evidence: list[list[Evidence]] = []
@@ -99,17 +101,6 @@ class _State:
 
     def all_evidence(self):
         return list(self.evidence.values())
-
-
-def make_client():
-    """Anthropic client if a key and the SDK are available, else None."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return None
-    try:
-        import anthropic
-    except ImportError:
-        return None
-    return anthropic.Anthropic()
 
 
 def _call_key(name, provenance_args):
@@ -145,10 +136,11 @@ def _handle_model_text(state, text):
     """Validate a piece of model prose written between tool calls."""
     if not state.steps:
         # Written before any tool has run, so there are no figures it could cite.
-        if check_text(text, []).ok:
+        result = check_text(text, [])
+        if result.ok:
             yield Event("plan", {"text": text, "source": "llm"})
         else:
-            yield from _block(state, text, None)
+            yield from _block(state, text, None, result.unsupported)
         return
 
     idx = len(state.steps) - 1
@@ -170,44 +162,38 @@ def _block(state, text, step_index, unsupported=None):
         yield Event("narration", {"step": step_index + 1, "text": fallback, "source": "template"})
 
 
-def _live_loop(state, toolkit, client, model, max_turns):
-    messages = [{"role": "user", "content": QUESTION_TEMPLATE.format(question=state.question)}]
+def _live_loop(state, toolkit, adapter, max_turns):
+    adapter.start(SYSTEM_PROMPT, toolkit.specs(), QUESTION_TEMPLATE.format(question=state.question))
     for _ in range(max_turns):
         try:
-            resp = client.messages.create(
-                model=model, max_tokens=1500, system=SYSTEM_PROMPT,
-                tools=toolkit.specs(), messages=messages,
+            turn = adapter.next_turn()
+        except Exception as exc:  # network, auth, quota: degrade rather than fail
+            detail = f": {exc}" if isinstance(exc, LLMError) else ""
+            note = (
+                f"The model call failed ({type(exc).__name__}{detail}); "
+                f"finishing the investigation in offline mode."
             )
-        except Exception as exc:  # network, auth, rate limit: degrade rather than fail
-            note = f"LLM call failed ({type(exc).__name__}); finishing the investigation in offline mode."
             state.notes.append(note)
             yield Event("note", {"text": note})
             return
 
-        messages.append({"role": "assistant", "content": resp.content})
-        texts = [b.text for b in resp.content if b.type == "text" and b.text.strip()]
-        tool_uses = [b for b in resp.content if b.type == "tool_use"]
-
-        for text in texts:
-            if tool_uses:
+        for text in turn.texts:
+            if turn.tool_calls:
                 yield from _handle_model_text(state, text)
             else:
                 state.final_text = text
-        if not tool_uses:
+        if not turn.tool_calls:
             return
 
         results = []
-        for tu in tool_uses:
+        for call in turn.tool_calls:
             try:
-                evs = yield from _do_tool(state, toolkit, tu.name, tu.input)
+                evs = yield from _do_tool(state, toolkit, call.name, call.args)
                 content = json.dumps([evidence_to_payload(e) for e in evs])
-                results.append({"type": "tool_result", "tool_use_id": tu.id, "content": content})
+                results.append(ToolResult(call.id, call.name, content))
             except ToolError as exc:
-                results.append({
-                    "type": "tool_result", "tool_use_id": tu.id,
-                    "content": str(exc), "is_error": True,
-                })
-        messages.append({"role": "user", "content": results})
+                results.append(ToolResult(call.id, call.name, str(exc), is_error=True))
+        adapter.add_results(results)
 
 
 def _fill_coverage(state, toolkit, live):
@@ -230,13 +216,17 @@ def investigate(question, toolkit: Toolkit, client=None, model=None,
                 max_turns=MAX_TURNS) -> Iterator[Event]:
     """Run an investigation, yielding events as it goes. The last event is
     'done' and carries the finished Investigation."""
-    model = model or os.environ.get("KYUYAAR_MODEL", DEFAULT_MODEL)
-    live = client is not None
-    state = _State(question, "live" if live else "offline", model if live else None)
-    yield Event("start", {"question": question, "mode": state.mode, "model": state.model})
+    adapter = as_adapter(client, model)
+    live = adapter is not None
+    state = _State(question, "live" if live else "offline", adapter.model if live else None)
+    state.provider = adapter.provider if live else None
+    yield Event("start", {
+        "question": question, "mode": state.mode, "model": state.model,
+        "provider": state.provider, "display": adapter.display if live else None,
+    })
 
     if live:
-        yield from _live_loop(state, toolkit, client, model, max_turns)
+        yield from _live_loop(state, toolkit, adapter, max_turns)
     else:
         yield Event("plan", {"text": OFFLINE_PLAN_TEXT, "source": "template"})
 
@@ -255,7 +245,8 @@ def investigate(question, toolkit: Toolkit, client=None, model=None,
     yield Event("summary", {"text": summary, "source": source})
 
     yield Event("done", {"investigation": Investigation(
-        question=question, mode=state.mode, model=state.model, evidence=evidence,
+        question=question, mode=state.mode, model=state.model, provider=state.provider,
+        evidence=evidence,
         steps=state.steps, summary=summary, summary_source=source,
         guardrail_blocks=state.blocks, notes=state.notes,
     )})
