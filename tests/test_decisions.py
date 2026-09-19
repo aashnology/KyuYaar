@@ -69,3 +69,9 @@ def test_report_records_the_human_choice(inv):
     assert "Waiting one more month." in memo
     assert "`marketing_effect`" in memo and "src/effects.py" in memo
     assert "No option chosen yet." in build_report(inv, ds)
+
+
+def test_summary_is_split_into_readable_blocks(inv):
+    summary = build_summary(inv.evidence)
+    assert "\n\n" in summary                       # separate paragraphs
+    assert summary.count("\n- ") == 2               # one bullet per supported cause

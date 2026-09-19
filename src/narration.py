@@ -88,8 +88,8 @@ def build_summary(evidence) -> str:
         names = ", ".join(label(e) for e in conc)
         parts.append(f"The change is concentrated in {names}.")
     if causes:
-        described = "; ".join(f"{e.hypothesis} ({e.strength} evidence)" for e in causes)
-        parts.append(f"Explanations the data supports: {described}.")
+        bullets = "\n".join(f"- {e.hypothesis} ({e.strength} evidence)" for e in causes)
+        parts.append("Explanations the data supports:\n" + bullets)
         parts.append(
             "These are associations, not proof of cause: the driver and the order "
             "change happened in the same month, so other simultaneous changes cannot "
@@ -100,4 +100,4 @@ def build_summary(evidence) -> str:
             "The data does not support a specific cause. More data, or a controlled "
             "test, would be needed before acting on any single explanation."
         )
-    return " ".join(parts)
+    return "\n\n".join(parts)

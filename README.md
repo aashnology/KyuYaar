@@ -9,6 +9,16 @@ The core design principle: the LLM reasons and orchestrates the investigation; i
 
 KyuYaar doesn't autonomously decide anything. It surfaces evidence-backed options, each with its assumptions and risks stated plainly and leaves the actual call to the person who has to live with the outcome.
 
+## The four screens
+
+| Command center | Investigation |
+|---|---|
+| ![Command center](docs/screenshots/1-command-center.png) | ![Investigation progress](docs/screenshots/2-investigation.png) |
+
+| Evidence | Decision |
+|---|---|
+| ![Evidence](docs/screenshots/3-evidence.png) | ![Decision options](docs/screenshots/4-decision.png) |
+
 ## Status
 
 | Layer | What it adds | State |

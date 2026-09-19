@@ -16,6 +16,7 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
@@ -69,6 +70,21 @@ def go_to(screen):
     st.session_state.screen = screen
 
 
+def scroll_to_top():
+    """Streamlit keeps the scroll position between screens; reset it.
+
+    The script carries a fresh nonce each call. Without it Streamlit sees an
+    identical hidden iframe and does not re-run the script on later screens.
+    """
+    st.session_state["_scroll_nonce"] = st.session_state.get("_scroll_nonce", 0) + 1
+    components.html(
+        f"<script>/* {st.session_state['_scroll_nonce']} */"
+        "const m = window.parent.document.querySelector('[data-testid=stMain]');"
+        "if (m) m.scrollTo({top: 0});</script>",
+        height=0,
+    )
+
+
 def start_investigation():
     st.session_state.pending = st.session_state.question
     st.session_state.inv = None
@@ -92,6 +108,11 @@ def _fmt_args(args):
     return ", ".join(f"{k}={v!r}" for k, v in args.items())
 
 
+def _call_text(tool, args):
+    """`tool(arg=...)` as one inline code span, with no empty backticks."""
+    return f"`{tool}({_fmt_args(args)})`"
+
+
 def monthly_revenue(orders):
     series = orders.set_index("order_date")["revenue"].resample("ME").sum()
     series.index = series.index.to_period("M").astype(str)
@@ -106,6 +127,7 @@ def revenue_chart(orders):
         height=300, margin=dict(l=10, r=10, t=30, b=10),
         title="Monthly revenue", yaxis_title=None, xaxis_title=None,
     )
+    fig.update_xaxes(type="category", tickangle=-45)
     return fig
 
 
@@ -130,9 +152,10 @@ def causes_chart(evidence):
     ))
     fig.update_layout(
         height=max(300, 34 * len(rows) + 90), margin=dict(l=10, r=10, t=50, b=10),
-        title="Order-volume change vs. comparable segments (%, with 95% interval)",
-        xaxis_title=None, yaxis_title=None,
+        title="Order change vs. comparable segments (%)",
+        xaxis_title="Whiskers: 95% interval", yaxis_title=None,
     )
+    fig.update_yaxes(autorange="reversed")
     return fig
 
 
@@ -173,11 +196,11 @@ def render_event(ev):
     elif kind == "plan":
         st.markdown(f"**Plan.** {data['text']}")
     elif kind == "tool_call":
-        st.markdown(f"**Step {data['step']} · `{data['tool']}`** `{_fmt_args(data['args'])}`")
+        st.markdown(f"**Step {data['step']}** · {_call_text(data['tool'], data['args'])}")
     elif kind == "evidence":
         rows = [{
             "Finding": label(e), "Strength": e.strength,
-            "Value": e.value, "Orders": e.sample_size,
+            "Key figure (%)": e.value, "Orders": e.sample_size,
         } for e in data["items"]]
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     elif kind == "narration":
@@ -223,7 +246,7 @@ def sidebar(client):
             )
 
 
-def nav():
+def nav(suffix=""):
     inv, running = st.session_state.inv, st.session_state.pending is not None
     reachable = {
         "command": True,
@@ -234,7 +257,7 @@ def nav():
     cols = st.columns(len(SCREENS))
     for col, (key, text) in zip(cols, SCREENS):
         col.button(
-            text, key=f"nav_{key}", on_click=go_to, args=(key,), width="stretch",
+            text, key=f"nav_{key}{suffix}", on_click=go_to, args=(key,), width="stretch",
             disabled=not reachable[key],
             type="primary" if st.session_state.screen == key else "secondary",
         )
@@ -262,7 +285,7 @@ def screen_command(orders):
     st.button("Investigate →", type="primary", on_click=start_investigation)
 
 
-def screen_progress(toolkit, client):
+def screen_progress(toolkit, client, nav_slot):
     st.header("Investigation")
     question = st.session_state.pending
     if question is not None:
@@ -280,10 +303,12 @@ def screen_progress(toolkit, client):
                 render_event(ev)
                 if pace and ev.kind in ("narration", "tool_call"):
                     time.sleep(pace)
-            status.update(label="Investigation complete", state="complete")
+            status.update(label="Investigation complete", state="complete", expanded=True)
         st.session_state.pending = None
         st.session_state.inv = final
         st.session_state.decisions = build_options(final.evidence)
+        with nav_slot.container():
+            nav(suffix="_done")
         st.success("The evidence chain is ready.")
         st.button("See the evidence →", type="primary", on_click=go_to, args=("evidence",))
         return
@@ -294,7 +319,7 @@ def screen_progress(toolkit, client):
         return
     st.caption(f"Question: {inv.question}")
     for step in inv.steps:
-        st.markdown(f"**Step {step['step']} · `{step['tool']}`** `{_fmt_args(step['args'])}`")
+        st.markdown(f"**Step {step['step']}** · {_call_text(step['tool'], step['args'])}")
         if step["narration"]:
             st.markdown(f"> {step['narration']}")
     for note in inv.notes:
@@ -405,13 +430,18 @@ def main():
     toolkit = Toolkit(orders, marketing)
     client = make_client()
     sidebar(client)
-    nav()
+    nav_slot = st.empty()
+    with nav_slot.container():
+        nav()
 
     screen = st.session_state.screen
+    if st.session_state.get("_shown_screen") != screen:
+        st.session_state["_shown_screen"] = screen
+        scroll_to_top()
     if screen == "command":
         screen_command(orders)
     elif screen == "progress":
-        screen_progress(toolkit, client)
+        screen_progress(toolkit, client, nav_slot)
     elif screen == "evidence" and st.session_state.inv:
         screen_evidence(orders)
     elif screen == "decision" and st.session_state.inv:
