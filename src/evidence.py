@@ -16,6 +16,9 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 MIN_SAMPLE_SIZE = 30
+# Below this total change, "share of the change" is dividing by something close
+# to zero and the ranking is noise. Same bar baseline_trend uses for "moderate".
+MIN_TOTAL_CHANGE_PCT = 10.0
 _STRENGTH_ORDER = ["weak", "moderate", "strong"]
 
 
@@ -31,6 +34,10 @@ class Evidence:
     strength: str                # "weak" | "moderate" | "strong"
     sample_size: int
     caveats: list[str] = field(default_factory=list)
+    # Structured numbers behind the headline value (period labels, control
+    # group figures, p-values). Kept separate so downstream code never has
+    # to parse the hypothesis string.
+    details: dict = field(default_factory=dict)
 
 
 def _downgrade_if_small_sample(strength: str, sample_size: int) -> tuple[str, list[str]]:
@@ -104,6 +111,11 @@ def baseline_trend(df, metric_col="revenue", date_col="order_date", freq="ME"):
         strength=strength,
         sample_size=sample_size,
         caveats=caveats,
+        details={
+            "latest_period": str(ts.index[-1].to_period(freq[:-1] if freq.endswith("E") else freq)),
+            "latest_value": round(float(latest_value), 2),
+            "baseline_periods": int(len(history)),
+        },
     )
 
 
@@ -144,6 +156,8 @@ def segment_breakdown(df, dimension_col, metric_col="revenue", date_col="order_d
     last_counts = counts.loc[last_period]
     total_last, total_prior = last_vals.sum(), prior_vals.sum()
     total_delta = total_last - total_prior
+    total_change_pct = (total_delta / total_prior * 100) if total_prior else 0.0
+    shares_unstable = abs(total_change_pct) < MIN_TOTAL_CHANGE_PCT
 
     ranked = []
     for segment in pivot.columns:
@@ -178,6 +192,12 @@ def segment_breakdown(df, dimension_col, metric_col="revenue", date_col="order_d
 
         sample_size = int(last_counts[segment])
         strength, caveats = _downgrade_if_small_sample(strength, sample_size)
+        if shares_unstable:
+            strength = "weak"
+            caveats.append(
+                f"the overall {metric_col} change is only {total_change_pct:+.1f}%, "
+                f"so each segment's share of the change is unstable"
+            )
 
         hyp = (
             f"{dimension_col}={segment} accounts for {share_of_total_delta*100:.0f}% "
@@ -197,6 +217,13 @@ def segment_breakdown(df, dimension_col, metric_col="revenue", date_col="order_d
             strength=strength,
             sample_size=sample_size,
             caveats=caveats,
+            details={
+                "period": str(last_period),
+                "prior_period": str(prior_period),
+                "segment_pct_change": None if pd.isna(seg_pct_change) else round(float(seg_pct_change), 1),
+                "last_value": round(float(last_vals[segment]), 2),
+                "prior_value": round(float(prior_vals[segment]), 2),
+            },
         )
         ranked.append((abs(disproportionality), evidence))
 

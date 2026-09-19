@@ -1,0 +1,135 @@
+"""
+The tools the orchestrator may call, their JSON schemas, and a dispatcher.
+
+The model only ever supplies a tool name and a small set of validated
+arguments. It never touches the dataframes, and every Evidence object that
+comes back is stamped with the tool and arguments that produced it, which is
+what lets the UI show where a number came from.
+"""
+
+from dataclasses import asdict
+
+from evidence import Evidence, baseline_trend, segment_breakdown
+from effects import marketing_effect, price_effect
+
+# Only dimensions with a matching cause-testing tool are exposed. Small
+# segments (customer tier, channel) need a significance test on the
+# association itself before they can be ranked reliably.
+DIMENSIONS = ["region", "category"]
+METRICS = ["revenue", "quantity"]
+
+SOURCE_FILE = {
+    "baseline_trend": "src/evidence.py",
+    "segment_breakdown": "src/evidence.py",
+    "marketing_effect": "src/effects.py",
+    "price_effect": "src/effects.py",
+}
+
+TOOL_SPECS = [
+    {
+        "name": "baseline_trend",
+        "description": (
+            "Compare the latest month's total of a metric against the average of all "
+            "earlier months. Establishes THAT the metric moved and by how much, not why. "
+            "Call this first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"metric": {"type": "string", "enum": METRICS}},
+            "required": [],
+        },
+    },
+    {
+        "name": "segment_breakdown",
+        "description": (
+            "Rank the values of one dimension (for example each region or each product "
+            "category) by how disproportionately they contributed to the latest month's "
+            "change. Shows WHERE the change is concentrated."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dimension": {"type": "string", "enum": DIMENSIONS},
+                "metric": {"type": "string", "enum": METRICS},
+            },
+            "required": ["dimension"],
+        },
+    },
+    {
+        "name": "marketing_effect",
+        "description": (
+            "For every region, test whether a change in marketing spend lines up with a "
+            "change in order volume, compared against regions whose spend did not change. "
+            "Returns statistical evidence per region, including regions where marketing "
+            "is NOT supported as an explanation."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "price_effect",
+        "description": (
+            "For every product category, test whether a like-for-like price change lines "
+            "up with a change in order volume, compared against categories whose prices "
+            "did not change. Returns statistical evidence per category, including "
+            "categories where pricing is NOT supported as an explanation."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+]
+
+
+class ToolError(ValueError):
+    """Raised for an unknown tool or an invalid argument."""
+
+
+class Toolkit:
+    def __init__(self, orders, marketing):
+        self.orders = orders
+        self.marketing = marketing
+
+    @staticmethod
+    def specs():
+        return TOOL_SPECS
+
+    def run(self, name, args=None):
+        args = dict(args or {})
+        if name == "baseline_trend":
+            metric = args.get("metric", "revenue")
+            self._check("metric", metric, METRICS)
+            result = [baseline_trend(self.orders, metric_col=metric)]
+            clean = {"metric": metric}
+        elif name == "segment_breakdown":
+            dimension = args.get("dimension")
+            metric = args.get("metric", "revenue")
+            self._check("dimension", dimension, DIMENSIONS)
+            self._check("metric", metric, METRICS)
+            result = segment_breakdown(self.orders, dimension_col=dimension, metric_col=metric)
+            clean = {"dimension": dimension, "metric": metric}
+        elif name == "marketing_effect":
+            result = marketing_effect(self.orders, self.marketing)
+            clean = {}
+        elif name == "price_effect":
+            result = price_effect(self.orders)
+            clean = {}
+        else:
+            raise ToolError(f"unknown tool '{name}'")
+
+        for ev in result:
+            ev.details["provenance"] = {
+                "tool": name,
+                "args": clean,
+                "source": SOURCE_FILE[name],
+            }
+        return result
+
+    @staticmethod
+    def _check(field, value, allowed):
+        if value not in allowed:
+            raise ToolError(f"{field} must be one of {allowed}, got {value!r}")
+
+
+def evidence_to_payload(ev: Evidence) -> dict:
+    """JSON-safe view of an Evidence object, as handed back to the model."""
+    d = asdict(ev)
+    d["details"] = {k: v for k, v in d["details"].items() if k != "provenance"}
+    return d

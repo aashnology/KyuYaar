@@ -1,2 +1,7 @@
 pandas>=2.2
 numpy>=1.26
+scipy>=1.11
+streamlit>=1.40
+plotly>=5.20
+anthropic>=0.40
+pytest>=8.0

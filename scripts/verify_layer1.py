@@ -1,20 +1,12 @@
 import sys
-sys.path.insert(0, "/home/claude/kyuyaar/src")
+from pathlib import Path
 
-import pandas as pd
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from data_loader import load_data
 from evidence import baseline_trend, segment_breakdown
 
-DATA_DIR = "/home/claude/kyuyaar/data"
-
-orders = pd.read_csv(f"{DATA_DIR}/orders.csv", parse_dates=["order_date"])
-products = pd.read_csv(f"{DATA_DIR}/products.csv")
-customers = pd.read_csv(f"{DATA_DIR}/customers.csv")
-
-enriched = (
-    orders
-    .merge(products[["product_id", "category"]], on="product_id")
-    .merge(customers[["customer_id", "region"]], on="customer_id")
-)
+enriched, _ = load_data()
 
 
 def show(evidence):

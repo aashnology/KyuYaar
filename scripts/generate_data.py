@@ -30,9 +30,14 @@ marketing.csv is generated now (so Layer 2 doesn't require regenerating
 everything) but is not consumed by Layer 1's functions.
 """
 
+import sys
+from datetime import date, timedelta
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from datetime import date, timedelta
+
+DEFAULT_OUT_DIR = Path(__file__).resolve().parents[1] / "data"
 
 SEED = 42
 rng = np.random.default_rng(SEED)
@@ -218,17 +223,18 @@ def gen_marketing():
     return pd.DataFrame(rows, columns=["date", "channel", "region", "spend", "impressions"])
 
 
-def main():
+def main(out_dir=None):
     customers_df = gen_customers()
     products_df = gen_products()
     orders_df = gen_orders(customers_df, products_df)
     marketing_df = gen_marketing()
 
-    out_dir = "/home/claude/kyuyaar/data"
-    customers_df.to_csv(f"{out_dir}/customers.csv", index=False)
-    products_df.to_csv(f"{out_dir}/products.csv", index=False)
-    orders_df.to_csv(f"{out_dir}/orders.csv", index=False)
-    marketing_df.to_csv(f"{out_dir}/marketing.csv", index=False)
+    out_dir = Path(out_dir) if out_dir else DEFAULT_OUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    customers_df.to_csv(out_dir / "customers.csv", index=False)
+    products_df.to_csv(out_dir / "products.csv", index=False)
+    orders_df.to_csv(out_dir / "orders.csv", index=False)
+    marketing_df.to_csv(out_dir / "marketing.csv", index=False)
 
     print(f"customers: {len(customers_df)} rows")
     print(f"products:  {len(products_df)} rows")
@@ -239,4 +245,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else None)
