@@ -27,6 +27,7 @@ KyuYaar doesn't autonomously decide anything. It surfaces evidence-backed option
 | 2 | Cause-testing tools, LLM orchestrator, decision options, Streamlit UI | done, submittable end to end |
 | 3 | `aov_volume_decomposition()`: fewer orders vs. smaller orders, and a check of each supported cause against the order pattern it predicts | done |
 | 4 | `marketing_channel_analysis()`: which paid channel, whether the loss is concentrated in it or region-wide, and whether it got less effective | done |
+| 5 | `run_scenario()`: what each option is worth under assumptions you set, with the arithmetic shown step by step | done |
 
 ## Run it
 
@@ -56,6 +57,7 @@ python scripts/verify_layer1.py   # Layer 1 output on the dataset
 python scripts/verify_layer2.py   # checks the investigation against the injected root cause
 python scripts/verify_layer3.py   # orders vs. order value, ground-truth check and false-alarm count
 python scripts/verify_layer4.py   # marketing by channel, ground-truth check and false-alarm count
+python scripts/verify_layer5.py   # scenario arithmetic recomputed from the raw CSVs, sensitivity to the assumptions
 python -m pytest                  # full test suite
 ```
 
@@ -96,6 +98,19 @@ Revenue is orders x average order value (AOV), so a drop is fewer orders, smalle
 
 Channel evidence is its own type (`channel`) and is never counted as a separate cause, so it cannot double the revenue at stake that the regional finding already carries.
 
+### What would each option be worth?
+
+`run_scenario()` in `src/scenario.py` projects a decision option over a horizon you choose. It is arithmetic, not a model, and no LLM is involved: every step is a multiplication or subtraction over figures the evidence already carries, and each step is returned with its formula so it can be checked by hand ("Show the math" on the decision screen, and in the memo for the option you choose).
+
+- **What the data supplies.** Monthly revenue at stake (the same figure the option's "Expected impact" quotes) and the range it takes across the 95% interval on the measured drop, the marketing spend that would be restored, and gross margin computed from `products.csv` cost.
+- **What you supply.** The share of the revenue at stake the option wins back, how many months before it starts to pay off, how many months to look ahead and, for a test, what share of the segment is treated. The data cannot say how much of a drop comes back, so the tool never estimates this. The starting values (50%, 1 month, 3 months, 25%) are placeholders and the screen says so.
+- **Revenue, then gross profit.** Revenue recovered is the headline. Gross profit follows because revenue is not profit: restoring spend costs money, and rolling back a price gives up margin on orders you would have kept anyway.
+  - Marketing: revenue recovered x the region's gross margin in the prior month, minus the spend restored, paid from month 1 while revenue only arrives after the lag.
+  - Price: the price returns to its earlier level, so revenue after the rollback earns the earlier margin. Gross profit change = earlier margin x (current revenue + revenue recovered) - current margin x current revenue.
+- **Break-even share.** The share of the revenue at stake that must come back for gross profit to be unchanged. Above 100% means the option cannot pay for itself within the horizon, whatever happens.
+- **Test options** use the same math scaled by the share treated. The hold option shows the monthly revenue still at stake per lever and does not add them.
+- **What it declines to size.** "Change one lever first, then the other" is not projected. Its two estimates overlap where the same customers buy the same products, the data cannot separate the combined effect from the individual ones, and any number would either double count or assume an overlap.
+
 Every Evidence object records the tool and arguments that produced it, and the UI shows this under "How this was computed".
 
 ## What was verified
@@ -122,7 +137,18 @@ Layer 4 on the same dataset:
 - Run over the ten earlier months, 0 of 120 cells were flagged.
 - The specificity, efficiency and gate logic is also tested on noise-free constructed worlds where the answer is known (a Paid-only loss, a region-wide loss, cost per order rising), so the tool is checked on the case this dataset does not contain.
 
+Layer 5 on the same dataset:
+
+- The engine's projections for North (marketing) and Electronics (price) match a recomputation from the raw CSVs that does not go through `src/scenario.py` (revenue, gross profit, break-even). For Electronics, projected gross profit is exactly zero at its break-even share (North's is above 100% here, so the same round trip is tested on a constructed marketing case).
+- Restoring North's spend is marginal on gross profit. Full restoration costs about 11,000 a month against about 12,700 of gross profit at stake, so the break-even share is 130% over 3 months with a 1-month lag, 104% over 6, 95% over 12 and 91% over 24. The Electronics rollback breaks even at 55.5% of the revenue at stake won back. This is a property of the generator's spend level, not a tuned result.
+- Every assumption is a slider, and the tests check that a marketing option's revenue and gross profit never fall as the share won back rises, that a test scales the act option exactly by the share treated, and that a lag as long as the horizon recovers nothing and says so.
+
 ## Known limits
+
+- Layer 5 projections rest on the share you assume the option wins back. The data measures the drop, not how much of it returns.
+- Gross margin is product cost only. Shipping, returns, payment fees and staff time are left out, so gross profit here is an upper bound on profit.
+- Marketing spend is paid from month 1 and revenue arrives after the lag, which penalises short horizons; payback after the horizon is not counted. The sensitivity is in `verify_layer5.py`.
+- The price scenario assumes the price goes fully back to its earlier level. A partial "soften" is not modelled, and neither is the dip in the lag months, when the lower price applies before demand returns.
 
 - Both live provider paths (Gemini over REST, Claude via the SDK) are tested against scripted fake transports, not the real APIs, during development. Run `scripts/check_live.py` once with a key before relying on them.
 - Evidence is association, not proof of cause. A driver and an order change in the same month cannot rule out another simultaneous change; every supported finding says so.

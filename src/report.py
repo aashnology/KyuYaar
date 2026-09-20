@@ -7,7 +7,8 @@ def _fmt(x):
     return "-" if x is None else (f"{x:,.1f}" if isinstance(x, float) else str(x))
 
 
-def build_report(inv, decision_set, chosen_id=None, note="") -> str:
+def build_report(inv, decision_set, chosen_id=None, note="", scenarios=None) -> str:
+    scenarios = scenarios or {}
     lines = [
         "# KyuYaar decision memo", "",
         f"**Question:** {inv.question}", "",
@@ -32,8 +33,20 @@ def build_report(inv, decision_set, chosen_id=None, note="") -> str:
             f"- **Confidence in the evidence behind it:** {opt.confidence}",
             f"- **Expected impact:** {opt.impact}",
             "- **Assumes:** " + "; ".join(opt.assumptions),
-            "- **Risks:** " + "; ".join(opt.risks), "",
+            "- **Risks:** " + "; ".join(opt.risks),
         ]
+        sc = scenarios.get(opt.id)
+        if sc is not None:
+            lines.append(f"- **Projected impact:** {sc.summary}")
+            if sc.projectable and sc.kind != "hold":
+                a = sc.assumptions
+                lines.append(
+                    f"- **Assumptions behind the projection (set by the person):** wins back "
+                    f"{a.recovery_share:.0%} of the revenue at stake"
+                    + (f", across {a.test_share:.0%} of the segment" if sc.kind == "test" else "")
+                    + f"; {a.lag_months} months before it starts, {a.horizon_months} months ahead."
+                )
+        lines.append("")
     if decision_set.not_supported:
         lines += ["## Tested and not supported", ""] + [f"- {x}" for x in decision_set.not_supported] + [""]
     lines += ["## Still unresolved", ""] + [f"- {x}" for x in decision_set.unresolved] + [""]
@@ -42,6 +55,14 @@ def build_report(inv, decision_set, chosen_id=None, note="") -> str:
     chosen = next((o for o in decision_set.options if o.id == chosen_id), None)
     if chosen:
         lines.append(f"Chosen by the person responsible: **{chosen.title}**")
+        sc = scenarios.get(chosen.id)
+        if sc is not None and sc.steps:
+            lines += [
+                "", "How the projection for this option was worked out:", "",
+                "| Step | Value | How |", "|---|---:|---|",
+            ]
+            for step in sc.steps:
+                lines.append(f"| {step.label} | {step.shown} | {step.formula} |")
         if note.strip():
             lines += ["", f"Their note: {note.strip()}"]
     else:

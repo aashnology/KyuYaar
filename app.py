@@ -3,7 +3,8 @@ KyuYaar -- Streamlit front end.
 
 Four screens: command center -> investigation progress -> evidence -> decision.
 The app only renders. All numbers come from src/evidence.py and src/effects.py,
-all wording from the orchestrator, and all options from src/decisions.py.
+all wording from the orchestrator, all options from src/decisions.py and all
+projections from src/scenario.py.
 
 Run with:  streamlit run app.py
 """
@@ -26,6 +27,10 @@ from decomposition import signature_check  # noqa: E402
 from narration import label, metric_note  # noqa: E402
 from orchestrator import investigate, make_client  # noqa: E402
 from report import build_report  # noqa: E402
+from scenario import (  # noqa: E402
+    DEFAULT_HORIZON_MONTHS, DEFAULT_LAG_MONTHS, DEFAULT_RECOVERY_SHARE, DEFAULT_TEST_SHARE,
+    Assumptions, run_scenario,
+)
 from toolkit import Toolkit  # noqa: E402
 
 DEFAULT_QUESTION = "Revenue dropped last month. Why did it happen, and what should I do?"
@@ -402,14 +407,89 @@ def choose(option_id):
     st.session_state.chosen = option_id
 
 
-def screen_decision():
+def option_assumptions(opt):
+    """The person's current assumptions for one option, read from the widgets."""
+    horizon = st.session_state.get("horizon_months", DEFAULT_HORIZON_MONTHS)
+    lag = min(st.session_state.get("lag_months", DEFAULT_LAG_MONTHS), horizon)
+    share = st.session_state.get(f"share_{opt.id}", round(DEFAULT_RECOVERY_SHARE * 100)) / 100
+    test = st.session_state.get(f"test_{opt.id}", round(DEFAULT_TEST_SHARE * 100)) / 100
+    return Assumptions(recovery_share=share, lag_months=lag, horizon_months=horizon, test_share=test)
+
+
+def time_frame_controls():
+    with st.container(border=True):
+        st.markdown("**Time frame for the projections**")
+        a, b = st.columns(2)
+        a.slider("Months to look ahead", 1, 12, DEFAULT_HORIZON_MONTHS, key="horizon_months")
+        b.slider("Months before the effect starts", 0, 6, DEFAULT_LAG_MONTHS, key="lag_months")
+        st.caption(
+            "Projections are arithmetic on the evidence and on the assumptions you set here and "
+            "on each option. The starting values are placeholders, not estimates: the data cannot "
+            "say how much of a drop comes back."
+        )
+
+
+def scenario_panel(opt, inv, orders):
+    """Sliders, headline figures and the step-by-step math for one option."""
+    if opt.kind in ("act", "test") and opt.id != "sequence_fixes":
+        a, b = st.columns(2)
+        a.slider(
+            "Share of the revenue at stake this wins back", 0, 100,
+            round(DEFAULT_RECOVERY_SHARE * 100), step=5, format="%d%%", key=f"share_{opt.id}",
+        )
+        if opt.kind == "test":
+            b.slider(
+                "Share of the segment treated in the test", 5, 100,
+                round(DEFAULT_TEST_SHARE * 100), step=5, format="%d%%", key=f"test_{opt.id}",
+            )
+
+    sc = run_scenario(opt, inv.evidence, orders, option_assumptions(opt))
+    if not sc.projectable:
+        st.info(sc.summary)
+        return sc
+
+    if opt.kind != "hold":
+        m1, m2, m3 = st.columns(3)
+        rng = (f"Across the 95% interval on the measured drop: {sc.revenue_range[0]:,.0f} "
+               f"to {sc.revenue_range[1]:,.0f}") if sc.revenue_range else None
+        m1.metric(f"Revenue recovered, {sc.assumptions.horizon_months} mo", f"{sc.revenue_total:,.0f}", help=rng)
+        if sc.gross_profit_total is not None:
+            prng = (f"Across the 95% interval on the measured drop: {sc.gross_profit_range[0]:+,.0f} "
+                    f"to {sc.gross_profit_range[1]:+,.0f}") if sc.gross_profit_range else None
+            m2.metric("Gross profit change", f"{sc.gross_profit_total:+,.0f}", help=prng)
+        if sc.break_even_share is not None:
+            reachable = sc.break_even_share <= 1
+            m3.metric(
+                "Break-even share won back",
+                f"{sc.break_even_share:.0%}" if reachable else "Above 100%",
+                help=("Share of the revenue at stake that must come back for gross profit to be unchanged."
+                      if reachable else
+                      "Gross profit does not break even within this horizon even if all of the revenue "
+                      "at stake comes back."),
+            )
+    st.caption(sc.summary)
+    label_text = "What waiting leaves open" if opt.kind == "hold" else "Show the math"
+    with st.expander(label_text):
+        if sc.steps:
+            st.markdown(
+                "| Step | Value | How |\n|---|---:|---|\n"
+                + "\n".join(f"| {x.label} | {x.shown} | {x.formula} |" for x in sc.steps)
+            )
+        st.markdown("**Not modelled**\n" + "\n".join(f"- {x}" for x in sc.not_modelled))
+    return sc
+
+
+def screen_decision(orders):
     inv, decision_set = st.session_state.inv, st.session_state.decisions
     st.header("Decision")
     st.markdown("These are options, not instructions. Each one says what it assumes and what it risks. The call is yours.")
 
     if decision_set.insufficient:
         st.warning("The evidence does not single out a cause, so no action is proposed beyond gathering more data.")
+    else:
+        time_frame_controls()
 
+    scenarios = {}
     for opt in decision_set.options:
         chosen = st.session_state.chosen == opt.id
         with st.container(border=True):
@@ -423,6 +503,10 @@ def screen_decision():
             a, r = st.columns(2)
             a.markdown("**Assumes**\n" + "\n".join(f"- {x}" for x in opt.assumptions))
             r.markdown("**Risks**\n" + "\n".join(f"- {x}" for x in opt.risks))
+            if not decision_set.insufficient:
+                st.divider()
+                st.markdown("**Projected impact**")
+                scenarios[opt.id] = scenario_panel(opt, inv, orders)
             if chosen:
                 st.success("You chose this option.")
             else:
@@ -439,7 +523,7 @@ def screen_decision():
 
     st.divider()
     st.text_area("Note for the record (optional)", key="note", height=80)
-    memo = build_report(inv, decision_set, st.session_state.chosen, st.session_state.note)
+    memo = build_report(inv, decision_set, st.session_state.chosen, st.session_state.note, scenarios)
     st.download_button(
         "Download decision memo (.md)", memo, file_name="kyuyaar_decision_memo.md",
         mime="text/markdown", disabled=st.session_state.chosen is None,
@@ -471,7 +555,7 @@ def main():
     elif screen == "evidence" and st.session_state.inv:
         screen_evidence(orders)
     elif screen == "decision" and st.session_state.inv:
-        screen_decision()
+        screen_decision(orders)
     else:
         screen_command(orders)
 

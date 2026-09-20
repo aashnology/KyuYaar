@@ -15,7 +15,7 @@ DEFAULT_DATA_DIR = REPO_ROOT / "data"
 
 def load_data(data_dir=None):
     """Return (orders, marketing) where `orders` carries category, region,
-    customer_segment and unit_price alongside the raw order columns."""
+    customer_segment, unit_price and unit_cost alongside the raw order columns."""
     data_dir = Path(data_dir) if data_dir else DEFAULT_DATA_DIR
 
     orders = pd.read_csv(data_dir / "orders.csv", parse_dates=["order_date"])
@@ -25,7 +25,10 @@ def load_data(data_dir=None):
 
     enriched = (
         orders
-        .merge(products[["product_id", "category"]], on="product_id", how="left")
+        .merge(
+            products[["product_id", "category", "cost"]].rename(columns={"cost": "unit_cost"}),
+            on="product_id", how="left",
+        )
         .merge(
             customers[["customer_id", "region", "segment"]].rename(
                 columns={"segment": "customer_segment"}
