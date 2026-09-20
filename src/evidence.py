@@ -26,7 +26,7 @@ _STRENGTH_ORDER = ["weak", "moderate", "strong"]
 class Evidence:
     id: str
     hypothesis: str
-    evidence_type: str          # "observation" | "association" | "statistical"
+    evidence_type: str          # "observation" | "association" | "statistical" | "decomposition" | "channel"
     metric: str
     value: float | None
     baseline: float | None

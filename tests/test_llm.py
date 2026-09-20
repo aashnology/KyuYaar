@@ -206,7 +206,8 @@ def test_full_investigation_through_the_gemini_adapter(toolkit):
         reply({"text": "Electronics stands out."}, fc("aov_volume_decomposition", {"dimension": "region"})),
         reply({"text": "North order count is down 47.6%."}, fc("aov_volume_decomposition", {"dimension": "category"})),
         reply({"text": "Electronics order count is down 41.9%."}, fc("marketing_effect")),
-        reply({"text": "Marketing in North is supported."}, fc("price_effect")),
+        reply({"text": "Marketing in North is supported."}, fc("marketing_channel_analysis")),
+        reply({"text": "The Paid channel in North is supported."}, fc("price_effect")),
         reply({"text": "Revenue is down 23.9%. North and Electronics carry the change."}),
     ]
     a, transport = adapter(responses)
@@ -303,7 +304,7 @@ def test_steps_the_model_did_not_comment_on_still_get_a_readout(toolkit):
               fc("segment_breakdown", {"dimension": "category"}),
               fc("aov_volume_decomposition", {"dimension": "region"}),
               fc("aov_volume_decomposition", {"dimension": "category"}),
-              fc("marketing_effect"), fc("price_effect")),
+              fc("marketing_effect"), fc("marketing_channel_analysis"), fc("price_effect")),
         reply({"text": "Revenue is down 23.9%. North and Electronics carry the change."}),
     ]
     a, _ = adapter(responses)

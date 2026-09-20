@@ -29,7 +29,7 @@ def test_full_flow_reaches_a_recorded_decision():
     assert not at.exception
     assert [s.value for s in at.subheader] == [
         "What changed", "Fewer orders, or smaller orders?",
-        "Where the change is concentrated", "Candidate causes tested",
+        "Where the change is concentrated", "Candidate causes tested", "Marketing by channel",
     ]
 
     at = click(at, "Continue to the decision")

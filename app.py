@@ -179,8 +179,13 @@ def evidence_card(ev, pattern=None):
             bits.append(f"normal month-to-month swing about {d['history_std_change_pct']:.1f}%")
         st.caption(" · ".join(bits))
         if pattern:
-            icon = {"consistent": "✅", "partial": "◐", "inconsistent": "⚠️"}[pattern["status"]]
-            st.markdown(f"{icon} **Order pattern.** {pattern['text']}")
+            icon = {
+                "consistent": "✅", "partial": "◐", "inconsistent": "⚠️",
+                "concentrated": "✅", "unclear": "◐", "region_wide": "⚠️",
+            }[pattern["status"]]
+            st.markdown(f"{icon} **{pattern.get('title', 'Order pattern')}.** {pattern['text']}")
+        if d.get("efficiency"):
+            st.markdown(f"**Spend vs. return.** {d['efficiency']['text']}")
 
         for c in ev.caveats:
             st.markdown(f"- {c}")
@@ -360,6 +365,7 @@ def screen_evidence(orders):
         ("Fewer orders, or smaller orders?", "decomposition"),
         ("Where the change is concentrated", "association"),
         ("Candidate causes tested", "statistical"),
+        ("Marketing by channel", "channel"),
     ]
     order = {"strong": 0, "moderate": 1, "weak": 2}
     for title, etype in groups:
@@ -374,7 +380,13 @@ def screen_evidence(orders):
         notable = [e for e in items if e.strength != "weak"]
         weak = [e for e in items if e.strength == "weak"]
         for e in notable:
-            evidence_card(e, signature_check(e, inv.evidence) if etype == "statistical" else None)
+            if etype == "statistical":
+                pattern = signature_check(e, inv.evidence)
+            elif etype == "channel" and e.details.get("channel_pattern"):
+                pattern = {**e.details["channel_pattern"], "title": "Channel pattern"}
+            else:
+                pattern = None
+            evidence_card(e, pattern)
         if weak:
             heading = "Weak evidence (not supported as an explanation)" if notable or etype != "observation" else "Weak evidence"
             if etype == "decomposition":

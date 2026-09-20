@@ -50,7 +50,8 @@ GOOD_SCRIPT = lambda: [
     turn(text("Electronics carries 60% of the change."), call(5, "aov_volume_decomposition", dimension="region")),
     turn(text("North order count is down 47.6%."), call(6, "aov_volume_decomposition", dimension="category")),
     turn(text("Electronics order count is down 41.9%."), call(7, "marketing_effect")),
-    turn(text("North shows a strong marketing-spend association."), call(8, "price_effect")),
+    turn(text("North shows a strong marketing-spend association."), call(8, "marketing_channel_analysis")),
+    turn(text("The Paid channel in North shows a moderate association."), call(9, "price_effect")),
     turn(text("Electronics shows a strong price association."),),
 ]
 

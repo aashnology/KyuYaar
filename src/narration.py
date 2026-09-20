@@ -12,9 +12,12 @@ _STRENGTH_WORD = {"strong": "Strong", "moderate": "Moderate", "weak": "Weak"}
 
 
 def label(ev) -> str:
-    """'region=North' -> 'North (region)'."""
+    """'region=North' -> 'North (region)'; a channel cell reads 'Paid in North'."""
     if not ev.segment or "=" not in ev.segment:
         return ev.segment or "overall"
+    if "|" in ev.segment:
+        parts = dict(p.split("=", 1) for p in ev.segment.split("|"))
+        return f"{parts.get('channel', '?')} in {parts.get('region', '?')}"
     dim, value = ev.segment.split("=", 1)
     return f"{value} ({dim})"
 
@@ -137,7 +140,34 @@ def narrate_step(tool, args, evidence) -> str:
         rest = f"The other {plural} show no matching move in {driver}."
         return " ".join(parts) + " " + rest
 
+    if tool == "marketing_channel_analysis":
+        notable = _notable(evidence)
+        if not notable:
+            return (
+                "No paid channel shows a spend move that lines up with an order change in that "
+                "channel, so channel-level marketing is not supported as an explanation."
+            )
+        return (
+            " ".join(_channel_lines(notable))
+            + " Every other channel and region shows no matching move in spend."
+        )
+
     return " ".join(e.hypothesis + "." for e in evidence[:3])
+
+
+def _channel_lines(cells):
+    """Sentences for supported channel findings: the finding, whether it is
+    concentrated in the channel or region-wide, and what happened to cost per order."""
+    lines = []
+    for e in cells:
+        line = f"{e.hypothesis} ({e.strength} evidence; p {e.details.get('p_value_text')}, {e.sample_size} orders)."
+        pattern, eff = e.details.get("channel_pattern"), e.details.get("efficiency")
+        if pattern:
+            line += " " + pattern["text"]
+        if eff:
+            line += " " + eff["text"]
+        lines.append(line)
+    return lines
 
 
 def build_summary(evidence) -> str:
@@ -145,6 +175,7 @@ def build_summary(evidence) -> str:
     obs = next((e for e in evidence if e.evidence_type == "observation"), None)
     conc = [e for e in _notable(evidence) if e.evidence_type == "association"]
     causes = [e for e in _notable(evidence) if e.evidence_type == "statistical"]
+    channels = [e for e in _notable(evidence) if e.evidence_type == "channel"]
 
     parts = []
     if obs:
@@ -162,12 +193,16 @@ def build_summary(evidence) -> str:
         lines = [c["text"] for c in checks if c]
         if lines:
             parts.append("Does the order pattern match each explanation?\n" + "\n".join(f"- {t}" for t in lines))
+        if channels:
+            parts.append("Which channel?\n" + "\n".join(f"- {t}" for t in _channel_lines(channels)))
         parts.append(
             "These are associations, not proof of cause: the driver and the order "
             "change happened in the same month, so other simultaneous changes cannot "
             "be ruled out. Every other region and category tested shows no matching driver move."
         )
     else:
+        if channels:
+            parts.append("Which channel?\n" + "\n".join(f"- {t}" for t in _channel_lines(channels)))
         parts.append(
             "The data does not support a specific cause. More data, or a controlled "
             "test, would be needed before acting on any single explanation."

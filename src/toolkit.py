@@ -9,13 +9,16 @@ what lets the UI show where a number came from.
 
 from dataclasses import asdict
 
+from channels import marketing_channel_analysis
 from decomposition import aov_volume_decomposition
 from evidence import Evidence, baseline_trend, segment_breakdown
 from effects import marketing_effect, price_effect
 
 # Only dimensions with a matching cause-testing tool are exposed. Small
-# segments (customer tier, channel) need a significance test on the
-# association itself before they can be ranked reliably.
+# segments (customer tier) need a significance test on the association itself
+# before they can be ranked reliably. Channel is covered by
+# marketing_channel_analysis, which tests it against comparison regions rather
+# than ranking it.
 DIMENSIONS = ["region", "category"]
 METRICS = ["revenue", "quantity"]
 
@@ -24,6 +27,7 @@ SOURCE_FILE = {
     "segment_breakdown": "src/evidence.py",
     "aov_volume_decomposition": "src/decomposition.py",
     "marketing_effect": "src/effects.py",
+    "marketing_channel_analysis": "src/channels.py",
     "price_effect": "src/effects.py",
 }
 
@@ -83,6 +87,18 @@ TOOL_SPECS = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "marketing_channel_analysis",
+        "description": (
+            "For every paid channel in every region, test whether a change in that channel's "
+            "spend lines up with a change in the orders recorded under it, compared against "
+            "regions whose spend did not change. For a channel whose spend moved it also checks "
+            "whether the order loss is concentrated in that channel or shared by the region's "
+            "other channels (region-wide), and whether cost per order changed. Run it after "
+            "marketing_effect; it shows WHICH channel, and whether channel data can support that."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "price_effect",
         "description": (
             "For every product category, test whether a like-for-like price change lines "
@@ -130,6 +146,9 @@ class Toolkit:
             clean = {} if dimension is None else {"dimension": dimension}
         elif name == "marketing_effect":
             result = marketing_effect(self.orders, self.marketing)
+            clean = {}
+        elif name == "marketing_channel_analysis":
+            result = marketing_channel_analysis(self.orders, self.marketing)
             clean = {}
         elif name == "price_effect":
             result = price_effect(self.orders)

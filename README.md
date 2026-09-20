@@ -26,6 +26,7 @@ KyuYaar doesn't autonomously decide anything. It surfaces evidence-backed option
 | 1 | Synthetic dataset with a known root cause, `baseline_trend()`, `segment_breakdown()` | done |
 | 2 | Cause-testing tools, LLM orchestrator, decision options, Streamlit UI | done, submittable end to end |
 | 3 | `aov_volume_decomposition()`: fewer orders vs. smaller orders, and a check of each supported cause against the order pattern it predicts | done |
+| 4 | `marketing_channel_analysis()`: which paid channel, whether the loss is concentrated in it or region-wide, and whether it got less effective | done |
 
 ## Run it
 
@@ -54,6 +55,7 @@ Free tiers limit requests per minute and per day. The Gemini adapter spaces call
 python scripts/verify_layer1.py   # Layer 1 output on the dataset
 python scripts/verify_layer2.py   # checks the investigation against the injected root cause
 python scripts/verify_layer3.py   # orders vs. order value, ground-truth check and false-alarm count
+python scripts/verify_layer4.py   # marketing by channel, ground-truth check and false-alarm count
 python -m pytest                  # full test suite
 ```
 
@@ -68,8 +70,9 @@ question -> orchestrator -> tools -> Evidence objects -> guardrail -> UI -> deci
 2. **`aov_volume_decomposition`** splits the revenue change into fewer/more orders and smaller/larger orders (details below), overall and for each region and category.
 3. **`segment_breakdown`** (region, category) shows where the change is concentrated.
 4. **`marketing_effect`** and **`price_effect`** test each candidate cause, region by region and category by category. A segment is only a candidate if its driver (spend, price) moved away from the typical change, and its orders are compared with segments whose driver did not move, within strata of the other dimension so a category-wide effect is not mistaken for a regional one. Effects are pooled log rate ratios with a z-test.
-5. The **orchestrator** lets the model choose which tool to call next and write short readouts. Every figure in that prose is checked against the evidence (`src/guardrail.py`); prose with an unsupported figure is discarded and replaced with text generated from the Evidence object.
-6. **`decisions.py`** maps supported (strong or moderate) causes to option templates, each with assumptions, risks and an impact estimate computed from the evidence. Nothing is ranked or chosen for you.
+5. **`marketing_channel_analysis`** repeats the marketing test for each paid channel in each region and checks whether the order loss is concentrated in the channel whose spend moved (details below).
+6. The **orchestrator** lets the model choose which tool to call next and write short readouts. Every figure in that prose is checked against the evidence (`src/guardrail.py`); prose with an unsupported figure is discarded and replaced with text generated from the Evidence object.
+7. **`decisions.py`** maps supported (strong or moderate) causes to option templates, each with assumptions, risks and an impact estimate computed from the evidence. Nothing is ranked or chosen for you.
 
 ### Fewer orders, or smaller orders?
 
@@ -81,6 +84,17 @@ Revenue is orders x average order value (AOV), so a drop is fewer orders, smalle
 - **Checking causes against their pattern.** A marketing change should move order count and leave order size alone; a price change should move order count and order value in opposite directions. `signature_check()` compares each supported cause with the decomposition. The result shows on the evidence screen, in the summary, and in the decision options: the "average order value stays roughly where it is" assumption on a marketing option is now checked against the data instead of only stated.
 
 ![Fewer orders, or smaller orders?](docs/screenshots/5-orders-vs-order-value.png)
+
+### Which channel?
+
+`marketing_effect` says a region's total spend moved with its orders. `marketing_channel_analysis` asks the same question for each paid channel in each region (12 cells here; Organic has no spend) and adds two checks the regional test cannot make.
+
+- **The test.** A cell is a candidate only if its channel spend moved 10 points or more from the typical change for that channel. Orders recorded under that channel are then compared with the same channel in regions where spend stayed typical in every paid channel, within product category, with the same pooled log rate ratio and the same strength bars as Layer 2.
+- **Concentrated or region-wide?** A cut in Paid spend should cost Paid orders. The tool also measures the region's other channels (Organic, which has no spend, Email, Referral) against the same comparison regions and tests the difference of the two effects. `concentrated`: the cell fell significantly more than the rest. `region_wide`: the other channels fell in the same direction with a supported effect of their own, so channel data cannot show that the cut channel drove the loss. `unclear`: too little data to say.
+- **Less bought, or less effective?** Cost per attributed order before and after, with a Poisson noise test on the order count. If spend and orders fall together the cost per order stays put: the channel performed as before, there was just less of it. If orders fall faster than spend, the channel also got less effective.
+- **Where it shows up.** Both results appear on the evidence card, in the summary, and in the decision options: on the marketing option, "orders respond to restored spend about as they responded to the cut" is now checked against cost per order, and a region-wide result adds a checked assumption, a risk and an unresolved question instead of leaving the option to imply that restoring one channel restores the region.
+
+Channel evidence is its own type (`channel`) and is never counted as a separate cause, so it cannot double the revenue at stake that the regional finding already carries.
 
 Every Evidence object records the tool and arguments that produced it, and the UI shows this under "How this was computed".
 
@@ -99,14 +113,26 @@ Layer 3 on the same dataset:
 - North is a pure order-count loss (AOV change not distinguishable from ordinary variation), the pattern a marketing cut predicts. Electronics shows fewer orders and a higher AOV (moderate), the pattern a price rise predicts. All other regions and categories stay weak.
 - Run over the four earlier months that have enough history, 3 of 80 hypotheses were flagged, all moderate and none strong. That is roughly what a 5% bar produces across 20 tests a month; unlike the Layer 2 tests it is not zero, because a raw split has no control group.
 
+Layer 4 on the same dataset:
+
+- North / Paid is the only supported channel cell (moderate): spend -44.9% against -1.7% typical, Paid-attributed orders -33.9% against comparison regions (p 0.013, 71 orders). The other 11 cells are weak.
+- The loss is region-wide, not Paid-specific. Orders in North's other channels (Organic, Email, Referral) fell 40.3% against comparison regions, close to Paid (difference p 0.610). This matches how the data was generated, where the demand drop applies to the whole region, and it is the case a naive "Paid spend fell, Paid orders fell" test would have credited to Paid.
+- Cost per Paid order went from 196.08 to 191.90 (-2.1%, p 0.885): less was bought, it did not perform worse.
+- 3 of the 11 cells with unchanged spend look significant on orders alone (West Paid p < 0.001, South Paid p 0.005, North Email p 0.008). Cell-level counts are small and channel is drawn at random per order in the generator, so this is chance; the spend gate keeps all three weak.
+- Run over the ten earlier months, 0 of 120 cells were flagged.
+- The specificity, efficiency and gate logic is also tested on noise-free constructed worlds where the answer is known (a Paid-only loss, a region-wide loss, cost per order rising), so the tool is checked on the case this dataset does not contain.
+
 ## Known limits
 
 - Both live provider paths (Gemini over REST, Claude via the SDK) are tested against scripted fake transports, not the real APIs, during development. Run `scripts/check_live.py` once with a key before relying on them.
 - Evidence is association, not proof of cause. A driver and an order change in the same month cannot rule out another simultaneous change; every supported finding says so.
 - The two effects overlap in North x Electronics and the data cannot separate their interaction. Options say so, and impact estimates for the two are not additive.
-- One dataset, one investigation type (why did revenue change). Customer segment and channel are not exposed to the orchestrator: small segments need a significance test on the association itself before they can be ranked reliably.
+- One dataset, one investigation type (why did revenue change). Customer segment is not exposed to the orchestrator: small segments need a significance test on the association itself before they can be ranked reliably. Channel is covered by a controlled test (`marketing_channel_analysis`), not by ranking.
 - The orders-vs-order-value comparison uses the prior month, while `baseline_trend` uses the average of all earlier months, so the two headline percentages differ (revenue -24.9% vs. prior month, -23.9% vs. baseline). The summary labels which basis each figure uses.
 - Order count and AOV are graded against only about ten earlier month-on-month changes, so the noise estimate is itself rough. Some findings sit close to a bar (Electronics AOV p = 0.049; South and Beauty order count p = 0.061 and 0.053, both graded weak). A month-length caveat appears when the two months differ in days.
+- Channel cells are small (about 20 to 120 orders a month), so the channel test has less power than the regional one. North / Paid grades moderate where the regional North finding grades strong; a real Paid effect could be missed, which is why a weak cell reads "not supported", not "no effect".
+- Which channel an order belongs to depends on how the channel field is attributed (last touch, first touch, self-reported). The tool takes the recorded field at face value and says so on every supported cell. In this synthetic data the channel on each order is drawn independently of spend, so a Paid-specific effect cannot appear in it; that path is covered by constructed test worlds instead.
+- `marketing.csv` impressions are not used yet. Cost per thousand impressions would separate "media got more expensive" from "the ads converted worse".
 - AOV blends products, so a fall can mean a shift in what is bought rather than smaller baskets. The tool does not separate mix from price-per-item; that would be a further split.
 - `baseline_trend` compares calendar-month totals, so a short month (February) can read as a drop. Per-day normalisation is not implemented.
 - The dataset is synthetic. Effect sizes here are much cleaner than real data would be.

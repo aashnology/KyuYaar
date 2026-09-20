@@ -12,6 +12,7 @@ assumes and what it risks; the person choosing owns the call.
 
 from dataclasses import dataclass, field
 
+from channels import channel_check
 from decomposition import signature_check
 from narration import label
 
@@ -74,6 +75,33 @@ def _marketing_options(ev, evidence):
         common_assumptions[2] = (
             f"Average order value stays roughly where it is. Checked against the data: {sig['text']}"
         )
+    chan = channel_check(ev, evidence)
+    channel_risks = []
+    if chan:
+        ch = chan["channel"]
+        eff = chan["efficiency"]
+        if eff:
+            common_assumptions[1] = (
+                f"Orders respond to restored {ch} spend about as they responded to the cut. "
+                f"Checked against the data: {eff['text']}"
+            )
+        if chan["status"] == "region_wide":
+            common_assumptions.append(
+                f"Restoring {ch} spend brings back orders in the region's other channels as well. "
+                f"Checked against the data: {chan['text']}"
+            )
+            channel_risks.append(
+                f"Orders fell in every channel, not only {ch}. If something region-wide is behind "
+                f"the decline, restoring {ch} spend alone recovers only part of it."
+            )
+        elif chan["status"] == "concentrated":
+            common_assumptions.append(
+                f"The orders lost are the ones {ch} was bringing in. Checked against the data: {chan['text']}"
+            )
+        else:
+            common_assumptions.append(
+                f"The orders lost are the ones {ch} was bringing in. Not confirmed: {chan['text']}"
+            )
     act = DecisionOption(
         id=f"restore_marketing_{region}", kind="act",
         title=f"Restore marketing spend in {region}",
@@ -86,7 +114,7 @@ def _marketing_options(ev, evidence):
         risks=[
             f"Adds about {_money(cut)} a month in cost; if the cut was not the real cause, that spend does not bring orders back.",
             "Recovery may lag the spend by a few weeks, so an early read can look like failure.",
-        ],
+        ] + channel_risks,
         impact_value=stake,
     )
     test = DecisionOption(
@@ -186,6 +214,14 @@ def build_options(evidence) -> DecisionSet:
         not_supported.append("Marketing spend: " + ", ".join(sorted(weak_marketing)))
     if weak_price:
         not_supported.append("Pricing: " + ", ".join(sorted(weak_price)))
+    weak_by_channel = {}
+    for e in evidence:
+        if e.evidence_type == "channel" and e.strength == "weak":
+            weak_by_channel.setdefault(e.details["channel"], []).append(e.details["region"])
+    if weak_by_channel:
+        not_supported.append("Marketing by channel: " + "; ".join(
+            f"{ch} in {', '.join(sorted(regions))}" for ch, regions in sorted(weak_by_channel.items())
+        ))
 
     options = []
     for ev in causes:
@@ -195,6 +231,13 @@ def build_options(evidence) -> DecisionSet:
             options.extend(_price_options(ev, evidence))
 
     unresolved = ["Whether something else that changed in the same month contributed to the drop."]
+    for e in causes:
+        chan = channel_check(e, evidence) if e.id.startswith("stat_marketing_") else None
+        if chan and chan["status"] != "concentrated":
+            unresolved.append(
+                f"Whether {chan['channel']} spend drives orders in the other channels of {_name(e)}, "
+                f"or something region-wide happened; channel data cannot separate the two."
+            )
     stakes = [(_name(e), e.details.get("revenue_at_stake") or 0) for e in causes]
 
     if len(causes) >= 2:
