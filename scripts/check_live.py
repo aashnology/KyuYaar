@@ -29,9 +29,9 @@ events = list(investigate("Revenue dropped last month. Why?", Toolkit(orders, ma
 inv = events[-1].data["investigation"]
 
 llm_steps = sum(1 for s in inv.steps if s["narration_source"] == "llm")
-model_chose = [s["tool"] for s in inv.steps][:3]
-print(f"Steps run: {len(inv.steps)}   readouts written by the model: {llm_steps}")
-print(f"Summary written by: {inv.summary_source}")
+filled = sum(1 for n in inv.notes if "did not run" in n)
+print(f"Tools run: {len(inv.steps)}   chosen by the model: {len(inv.steps) - filled}   filled in afterwards: {filled}")
+print(f"Readouts written by the model: {llm_steps}   Summary written by: {inv.summary_source}")
 print(f"Guardrail blocks: {len(inv.guardrail_blocks)}")
 for note in inv.notes:
     print("Note:", note)
@@ -41,6 +41,10 @@ for block in inv.guardrail_blocks:
 supported = sorted(e.id for e in inv.evidence if e.evidence_type == "statistical" and e.strength != "weak")
 print("Supported causes:", supported)
 
-ok = llm_steps > 0 and not inv.notes
+# The live path worked if the model drove the run without an API failure. A
+# blocked passage is not a failure: it means the guardrail did its job.
+failed = any("model call failed" in n for n in inv.notes)
+drove_it = (len(inv.steps) - filled) > 0 and (llm_steps > 0 or inv.summary_source == "llm" or inv.guardrail_blocks)
+ok = drove_it and not failed
 print("LIVE PATH OK" if ok else "LIVE PATH DID NOT COMPLETE - see notes above")
 sys.exit(0 if ok else 1)

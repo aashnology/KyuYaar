@@ -52,11 +52,10 @@ Work in this order:
 Rules:
 - Quote figures exactly as the tool results give them. Do not introduce any other numerals: no \
 sums, averages, ratios or recalculated percentages. If a figure is not in a tool result, do not state it.
-- You may call several independent tools in the same turn, and you should: after baseline_trend, \
-run segment_breakdown for region and for category together, then marketing_effect and price_effect \
-together. Fewer, larger turns keep the investigation fast.
-- Between tool calls, write one or two sentences on what the latest result shows. State the \
-strength honestly and mention the key caveat. Where evidence is weak, say the data does not \
+- Work in rounds and keep the number of turns small: round 1 is baseline_trend alone; round 2 is \
+segment_breakdown for region and for category together; round 3 is marketing_effect and price_effect \
+together. Before each round after the first, write one or two sentences on what the previous results \
+show, stating the strength honestly and the key caveat. Where evidence is weak, say the data does not \
 support that explanation.
 - These are associations and statistical comparisons, not proof. Never write "caused"; use \
 wording like "accompanies" or "is consistent with".
@@ -248,6 +247,14 @@ def investigate(question, toolkit: Toolkit, client=None, model=None,
         yield Event("plan", {"text": OFFLINE_PLAN_TEXT, "source": "template"})
 
     yield from _fill_coverage(state, toolkit, live)
+
+    # A model that batches its tool calls may not comment on every step; give
+    # those steps evidence-derived readouts so the progress log is never bare.
+    for idx, step in enumerate(state.steps):
+        if step["narration"] is None:
+            text = _template_narration(state, idx)
+            step["narration"], step["narration_source"] = text, "template"
+            yield Event("narration", {"step": idx + 1, "text": text, "source": "template"})
 
     evidence = state.all_evidence()
     template_summary = build_summary(evidence)

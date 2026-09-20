@@ -285,6 +285,25 @@ def test_parallel_tool_calls_are_answered_together_in_one_message(toolkit):
     assert len(second_request[1]["parts"]) == 3                                # text plus both calls, echoed verbatim
 
 
-def test_the_prompt_asks_the_model_to_batch_independent_tools():
+def test_the_prompt_asks_for_rounds_with_a_readout_between_them():
     from orchestrator import SYSTEM_PROMPT
-    assert "same turn" in SYSTEM_PROMPT
+    assert "round 1" in SYSTEM_PROMPT and "round 3" in SYSTEM_PROMPT
+    assert "Before each round" in SYSTEM_PROMPT
+
+
+def test_steps_the_model_did_not_comment_on_still_get_a_readout(toolkit):
+    # The model batches every tool into one turn and only writes a summary.
+    responses = [
+        reply(fc("baseline_trend", {"metric": "revenue"}),
+              fc("segment_breakdown", {"dimension": "region"}),
+              fc("segment_breakdown", {"dimension": "category"}),
+              fc("marketing_effect"), fc("price_effect")),
+        reply({"text": "Revenue is down 23.9%. North and Electronics carry the change."}),
+    ]
+    a, _ = adapter(responses)
+    events = list(investigate("why", toolkit, client=a))
+    inv = events[-1].data["investigation"]
+    assert not any(e.kind == "coverage" for e in events)          # the model ran everything itself
+    assert inv.summary_source == "llm"
+    assert all(s["narration"] for s in inv.steps)                 # no bare steps
+    assert all(s["narration_source"] == "template" for s in inv.steps)
