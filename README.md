@@ -47,6 +47,8 @@ The investigation can be driven by a live model or run offline:
 python scripts/check_live.py      # one real investigation; reports whether the model drove it
 ```
 
+Free tiers limit requests per minute and per day. The Gemini adapter spaces calls (`KYUYAAR_MIN_INTERVAL`, default 4 seconds), waits as long as the provider asks when it is rate limited, and treats a per-day quota as final. The model is also asked to batch independent tools into one turn, which keeps a full investigation to a handful of calls. If a live call still fails, the investigation finishes offline and says why.
+
 ```bash
 python scripts/verify_layer1.py   # Layer 1 output on the dataset
 python scripts/verify_layer2.py   # checks the investigation against the injected root cause

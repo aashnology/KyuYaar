@@ -9,7 +9,8 @@ import json
 import pytest
 
 from llm import (
-    GEMINI_DEFAULT_MODEL, GeminiAdapter, LLMError, ToolResult, _to_gemini_tool, make_client,
+    GEMINI_DEFAULT_MODEL, GeminiAdapter, LLMError, ToolResult, _to_gemini_tool, gemini_error,
+    make_client,
 )
 from orchestrator import STANDARD_PLAN, investigate
 from toolkit import TOOL_SPECS
@@ -40,7 +41,12 @@ def fc(name, args=None, **extra):
 
 def adapter(responses, **kw):
     transport = Transport(responses)
-    return GeminiAdapter("test-key", "gemini-test", post=transport, sleep=lambda s: None, **kw), transport
+    sleeps = []
+    kw.setdefault("min_interval", 0)
+    kw.setdefault("sleep", sleeps.append)
+    a = GeminiAdapter("test-key", "gemini-test", post=transport, **kw)
+    a.sleeps = sleeps
+    return a, transport
 
 
 def test_tool_specs_are_translated_to_function_declarations():
@@ -103,16 +109,77 @@ def test_tool_errors_are_reported_as_errors():
 
 
 def test_rate_limits_are_retried_then_surface():
-    a, transport = adapter([LLMError("HTTP 429: quota", status=429), reply({"text": "ok"})])
+    a, transport = adapter([LLMError("HTTP 429: quota", status=429), reply({"text": "ok"})], retry_delays=(1, 2))
     a.start("s", TOOL_SPECS, "q")
     assert a.next_turn().texts == ["ok"]
-    assert len(transport.calls) == 2
+    assert len(transport.calls) == 2 and a.sleeps == [1]
 
-    a, transport = adapter([LLMError("HTTP 429: quota", status=429)] * 3)
+    a, transport = adapter([LLMError("HTTP 429: quota", status=429)] * 3, retry_delays=(1, 2))
     a.start("s", TOOL_SPECS, "q")
     with pytest.raises(LLMError):
         a.next_turn()
     assert len(transport.calls) == 3                                           # first try + two retries
+    assert a.sleeps == [1, 2]
+
+
+def test_the_wait_the_provider_asks_for_is_honoured_and_capped():
+    a, _ = adapter([LLMError("429", status=429, retry_after=23.0), reply({"text": "ok"})])
+    a.start("s", TOOL_SPECS, "q")
+    a.next_turn()
+    assert a.sleeps == [23.0]
+    assert any("23s" in n for n in a.drain_notices())
+    assert a.drain_notices() == []                                             # drained once
+
+    a, _ = adapter([LLMError("429", status=429, retry_after=900.0), reply({"text": "ok"})])
+    a.start("s", TOOL_SPECS, "q")
+    a.next_turn()
+    assert a.sleeps == [GeminiAdapter.MAX_WAIT]
+
+
+def test_a_daily_quota_is_not_retried():
+    a, transport = adapter([LLMError("HTTP 429: quota", status=429, daily=True)])
+    a.start("s", TOOL_SPECS, "q")
+    with pytest.raises(LLMError, match="daily quota"):
+        a.next_turn()
+    assert len(transport.calls) == 1 and a.sleeps == []
+
+
+def test_calls_are_spaced_by_the_minimum_interval():
+    now = [100.0]
+    slept = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        now[0] += seconds
+
+    a, _ = adapter([reply({"text": "a"}), reply({"text": "b"})], min_interval=5, sleep=sleep, clock=lambda: now[0])
+    a.start("s", TOOL_SPECS, "q")
+    a.next_turn()
+    now[0] += 2                                                                # 2s of "work" between calls
+    a.next_turn()
+    assert slept == [3]                                                        # topped up to the 5s interval
+
+
+def test_google_error_payload_is_parsed_for_wait_and_quota_type():
+    body = json.dumps({"error": {
+        "code": 429, "status": "RESOURCE_EXHAUSTED",
+        "message": "You exceeded your current quota. For more information on this error, head to: https://x",
+        "details": [
+            {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+             "violations": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]},
+            {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "23s"},
+        ],
+    }}).encode()
+    err = gemini_error(429, body)
+    assert err.status == 429 and err.retry_after == 23.0 and err.daily is False
+    assert "For more information" not in str(err)
+
+    daily = json.dumps({"error": {"message": "quota", "details": [
+        {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+         "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]}}).encode()
+    assert gemini_error(429, daily).daily is True
+
+    assert gemini_error(500, b"not json").retry_after is None                 # malformed bodies do not crash
 
 
 def test_non_retryable_errors_are_not_retried():
@@ -153,11 +220,15 @@ def test_quota_failure_mid_run_falls_back_to_offline(toolkit):
         reply(fc("baseline_trend")),
         LLMError("HTTP 429: quota exceeded", status=429), LLMError("HTTP 429", status=429), LLMError("HTTP 429", status=429),
     ]
-    a, _ = adapter(responses)
+    a, _ = adapter(responses, retry_delays=(1, 2))
     events = list(investigate("why", toolkit, client=a))
     inv = events[-1].data["investigation"]
     assert any("429" in n for n in inv.notes)
     assert [s["tool"] for s in inv.steps] == [t for t, _ in STANDARD_PLAN]
+    # An API failure is not the model skipping tools, so no per-tool "coverage" complaints.
+    assert not any(e.kind == "coverage" for e in events)
+    # The wait notices reach the event stream too.
+    assert any(e.kind == "note" and "waiting" in e.data["text"] for e in events)
 
 
 def test_guardrail_applies_to_gemini_prose_too(toolkit):
@@ -196,3 +267,24 @@ def test_api_key_never_appears_in_error_text():
     with pytest.raises(LLMError) as info:
         a.next_turn()
     assert "test-key" not in str(info.value)
+
+
+def test_parallel_tool_calls_are_answered_together_in_one_message(toolkit):
+    responses = [
+        reply({"text": "Locating the change."},
+              fc("segment_breakdown", {"dimension": "region"}),
+              fc("segment_breakdown", {"dimension": "category"})),
+        reply({"text": "Done."}),
+    ]
+    a, transport = adapter(responses)
+    list(investigate("why", toolkit, client=a))
+    second_request = transport.calls[1]["payload"]["contents"]
+    reply_to_calls = second_request[2]
+    assert reply_to_calls["role"] == "user"
+    assert [p["functionResponse"]["name"] for p in reply_to_calls["parts"]] == ["segment_breakdown"] * 2
+    assert len(second_request[1]["parts"]) == 3                                # text plus both calls, echoed verbatim
+
+
+def test_the_prompt_asks_the_model_to_batch_independent_tools():
+    from orchestrator import SYSTEM_PROMPT
+    assert "same turn" in SYSTEM_PROMPT

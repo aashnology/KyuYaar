@@ -52,6 +52,9 @@ Work in this order:
 Rules:
 - Quote figures exactly as the tool results give them. Do not introduce any other numerals: no \
 sums, averages, ratios or recalculated percentages. If a figure is not in a tool result, do not state it.
+- You may call several independent tools in the same turn, and you should: after baseline_trend, \
+run segment_breakdown for region and for category together, then marketing_effect and price_effect \
+together. Fewer, larger turns keep the investigation fast.
 - Between tool calls, write one or two sentences on what the latest result shows. State the \
 strength honestly and mention the key caveat. Where evidence is weak, say the data does not \
 support that explanation.
@@ -98,6 +101,7 @@ class _State:
         self.notes: list[str] = []
         self.final_text: str | None = None
         self.filled_after_model = False
+        self.call_failed = False
 
     def all_evidence(self):
         return list(self.evidence.values())
@@ -162,12 +166,22 @@ def _block(state, text, step_index, unsupported=None):
         yield Event("narration", {"step": step_index + 1, "text": fallback, "source": "template"})
 
 
+def _drain_notices(state, adapter):
+    drain = getattr(adapter, "drain_notices", None)
+    for text in (drain() if drain else []):
+        state.notes.append(text)
+        yield Event("note", {"text": text})
+
+
 def _live_loop(state, toolkit, adapter, max_turns):
     adapter.start(SYSTEM_PROMPT, toolkit.specs(), QUESTION_TEMPLATE.format(question=state.question))
     for _ in range(max_turns):
         try:
             turn = adapter.next_turn()
+            yield from _drain_notices(state, adapter)
         except Exception as exc:  # network, auth, quota: degrade rather than fail
+            yield from _drain_notices(state, adapter)
+            state.call_failed = True
             detail = f": {exc}" if isinstance(exc, LLMError) else ""
             note = (
                 f"The model call failed ({type(exc).__name__}{detail}); "
@@ -197,10 +211,13 @@ def _live_loop(state, toolkit, adapter, max_turns):
 
 
 def _fill_coverage(state, toolkit, live):
+    # After an API failure the model never had the chance to skip anything, so
+    # the remaining steps are simply the offline plan, not a "coverage gap".
+    announce = live and not state.call_failed
     for name, args in STANDARD_PLAN:
         if _call_key(name, args) in state.calls:
             continue
-        if live:
+        if announce:
             state.filled_after_model = True
             msg = f"The model did not run {name}{args or ''}; it was run to complete the standard investigation."
             state.notes.append(msg)

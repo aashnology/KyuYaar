@@ -26,9 +26,11 @@ GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{mode
 class LLMError(RuntimeError):
     """A provider call failed. The message is safe to show: it never contains credentials."""
 
-    def __init__(self, message, status=None):
+    def __init__(self, message, status=None, retry_after=None, daily=False):
         super().__init__(message)
         self.status = status
+        self.retry_after = retry_after      # seconds the provider asked us to wait
+        self.daily = daily                  # a per-day quota: waiting a minute will not help
 
 
 @dataclass
@@ -89,6 +91,36 @@ class AnthropicAdapter:
 
 # ---------------------------------------------------------------- Gemini ---
 
+def _seconds(value):
+    """'23s' or '23.5s' -> 23.0; anything else -> None."""
+    try:
+        return float(str(value).rstrip("s"))
+    except (TypeError, ValueError):
+        return None
+
+
+def gemini_error(status, body: bytes) -> LLMError:
+    """Turn an HTTP error response into an LLMError, keeping the retry hints."""
+    err = {}
+    try:
+        err = json.loads(body).get("error", {}) or {}
+    except Exception:
+        pass
+    message = (err.get("message") or "").split(" For more information")[0].strip()
+    retry_after, daily = None, False
+    for detail in err.get("details") or []:
+        kind = str(detail.get("@type", ""))
+        if kind.endswith("RetryInfo"):
+            retry_after = _seconds(detail.get("retryDelay"))
+        if kind.endswith("QuotaFailure"):
+            for violation in detail.get("violations") or []:
+                ident = f"{violation.get('quotaId', '')}{violation.get('quotaMetric', '')}"
+                if "PerDay" in ident:
+                    daily = True
+    return LLMError(f"HTTP {status}: {message[:160]}".rstrip(": "), status=status,
+                    retry_after=retry_after, daily=daily)
+
+
 def _urllib_post(url, headers, payload, timeout):
     request = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
@@ -97,12 +129,7 @@ def _urllib_post(url, headers, payload, timeout):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read())
     except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = json.loads(exc.read()).get("error", {}).get("message", "")
-        except Exception:
-            pass
-        raise LLMError(f"HTTP {exc.code}: {detail[:200]}".rstrip(": "), status=exc.code) from None
+        raise gemini_error(exc.code, exc.read()) from None
     except urllib.error.URLError as exc:
         raise LLMError(f"network error: {exc.reason}") from None
 
@@ -124,12 +151,32 @@ class GeminiAdapter:
     provider = "gemini"
     display = "Gemini"
     RETRY_STATUSES = (429, 503)
+    MAX_WAIT = 70.0          # longest single wait; a per-minute quota clears within this
 
-    def __init__(self, api_key, model, post=None, timeout=60, retry_delays=(3, 8), sleep=time.sleep):
+    def __init__(self, api_key, model, post=None, timeout=60, retry_delays=(5, 20, 40),
+                 sleep=time.sleep, clock=time.monotonic, min_interval=None):
         self._api_key, self.model = api_key, model
         self._post = post or _urllib_post
-        self._timeout, self._retry_delays, self._sleep = timeout, retry_delays, sleep
+        self._timeout, self._retry_delays = timeout, retry_delays
+        self._sleep, self._clock = sleep, clock
+        # Free tiers cap requests per minute; spacing calls avoids most 429s.
+        if min_interval is None:
+            min_interval = float(os.environ.get("KYUYAAR_MIN_INTERVAL", "4"))
+        self._min_interval = min_interval
+        self._last_call = None
+        self.notices = []
         self.contents = []
+
+    def drain_notices(self):
+        notices, self.notices = self.notices, []
+        return notices
+
+    def _pace(self):
+        if self._last_call is not None and self._min_interval:
+            gap = self._min_interval - (self._clock() - self._last_call)
+            if gap > 0:
+                self._sleep(gap)
+        self._last_call = self._clock()
 
     def start(self, system, tools, question):
         self._static = {
@@ -144,11 +191,21 @@ class GeminiAdapter:
         payload = {**self._static, "contents": self.contents}
         delays = list(self._retry_delays)
         while True:
+            self._pace()
             try:
                 return self._post(url, headers, payload, self._timeout)
             except LLMError as exc:
+                if exc.daily:
+                    raise LLMError(
+                        f"daily quota used up ({exc}); try again tomorrow or use another key",
+                        status=exc.status,
+                    ) from None
                 if exc.status in self.RETRY_STATUSES and delays:
-                    self._sleep(delays.pop(0))
+                    wait = min(exc.retry_after or delays.pop(0), self.MAX_WAIT)
+                    if exc.retry_after:
+                        delays.pop(0)
+                    self.notices.append(f"Rate limited by the provider; waiting {wait:.0f}s before retrying.")
+                    self._sleep(wait)
                     continue
                 raise
 
