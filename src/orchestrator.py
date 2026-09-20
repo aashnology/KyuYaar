@@ -29,39 +29,48 @@ MAX_TURNS = 10
 # of it; anything it skips is filled in afterwards and flagged.
 STANDARD_PLAN = [
     ("baseline_trend", {"metric": "revenue"}),
+    ("aov_volume_decomposition", {}),
     ("segment_breakdown", {"dimension": "region", "metric": "revenue"}),
     ("segment_breakdown", {"dimension": "category", "metric": "revenue"}),
+    ("aov_volume_decomposition", {"dimension": "region"}),
+    ("aov_volume_decomposition", {"dimension": "category"}),
     ("marketing_effect", {}),
     ("price_effect", {}),
 ]
 
 OFFLINE_PLAN_TEXT = (
-    "Standard investigation: confirm the metric really moved, find where the "
-    "change is concentrated, then test marketing spend and pricing as candidate causes."
+    "Standard investigation: confirm the metric really moved, split the change into "
+    "fewer orders versus smaller orders, find where it is concentrated, then test "
+    "marketing spend and pricing as candidate causes."
 )
 
 SYSTEM_PROMPT = """You are the investigation engine inside KyuYaar, a tool that helps a small \
-business understand why a metric changed. You work with four deterministic tools that return \
+business understand why a metric changed. You work with five deterministic tools that return \
 Evidence objects. You never compute numbers yourself.
 
 Work in this order:
-1. baseline_trend to confirm the metric actually moved.
-2. segment_breakdown on region and on category to see where the change is concentrated.
+1. baseline_trend to confirm the metric actually moved, and aov_volume_decomposition with no \
+dimension to see whether the change is fewer orders, smaller orders, or both.
+2. segment_breakdown on region and on category to see where the change is concentrated, and \
+aov_volume_decomposition on region and on category to see which of the two parts moved in each.
 3. marketing_effect and price_effect to test candidate causes.
 
 Rules:
 - Quote figures exactly as the tool results give them. Do not introduce any other numerals: no \
 sums, averages, ratios or recalculated percentages. If a figure is not in a tool result, do not state it.
-- Work in rounds and keep the number of turns small: round 1 is baseline_trend alone; round 2 is \
-segment_breakdown for region and for category together; round 3 is marketing_effect and price_effect \
-together. Before each round after the first, write one or two sentences on what the previous results \
-show, stating the strength honestly and the key caveat. Where evidence is weak, say the data does not \
-support that explanation.
+- Work in rounds and keep the number of turns small: round 1 is baseline_trend and the overall \
+aov_volume_decomposition together; round 2 is segment_breakdown and aov_volume_decomposition for \
+region and for category together; round 3 is marketing_effect and price_effect together. Before each \
+round after the first, write one or two sentences on what the previous results show, stating the \
+strength honestly and the key caveat. Where evidence is weak, say the data does not support that explanation.
+- "Fewer orders" and "smaller orders" are separate hypotheses with separate strengths. Say which is \
+supported and which is not. A weak result means there is no clear evidence the figure moved.
 - These are associations and statistical comparisons, not proof. Never write "caused"; use \
 wording like "accompanies" or "is consistent with".
 - Do not recommend actions. Decision options are produced separately.
-- When you have finished, write a final summary of at most 120 words: what changed, where it is \
-concentrated, which explanations the evidence supports, which it does not, and what remains unknown."""
+- When you have finished, write a final summary of at most 120 words: what changed, whether it is \
+fewer or smaller orders, where it is concentrated, which explanations the evidence supports, which it \
+does not, and what remains unknown."""
 
 QUESTION_TEMPLATE = (
     "Business question: {question}\n\nInvestigate using the tools, then summarise."

@@ -12,6 +12,7 @@ assumes and what it risks; the person choosing owns the call.
 
 from dataclasses import dataclass, field
 
+from decomposition import signature_check
 from narration import label
 
 _ACTIONABLE = ("strong", "moderate")
@@ -52,8 +53,9 @@ def _weakest(evs):
     return min((e.strength for e in evs), key=lambda s: order[s]) if evs else "n/a"
 
 
-def _marketing_options(ev):
+def _marketing_options(ev, evidence):
     d, region = ev.details, _name(ev)
+    sig = signature_check(ev, evidence)
     cut = max(d["spend_prior"] - d["spend_last"], 0.0)
     stake = d.get("revenue_at_stake") or 0.0
     channel = f" (mainly {d['top_channel']})" if d.get("top_channel") else ""
@@ -67,6 +69,11 @@ def _marketing_options(ev):
         "Orders respond to restored spend about as they responded to the cut.",
         "Average order value stays roughly where it is.",
     ]
+    if sig:
+        # Turn the stated assumption into a checked one where the data allows.
+        common_assumptions[2] = (
+            f"Average order value stays roughly where it is. Checked against the data: {sig['text']}"
+        )
     act = DecisionOption(
         id=f"restore_marketing_{region}", kind="act",
         title=f"Restore marketing spend in {region}",
@@ -104,8 +111,10 @@ def _marketing_options(ev):
     return [act, test]
 
 
-def _price_options(ev):
+def _price_options(ev, evidence):
     d, cat = ev.details, _name(ev)
+    sig = signature_check(ev, evidence)
+    pattern = f" {sig['text']}" if sig else ""
     stake = d.get("revenue_at_stake") or 0.0
     increased = (d.get("driver_change_pct") or 0) > (d.get("driver_typical_change_pct") or 0)
     impact = (
@@ -118,7 +127,7 @@ def _price_options(ev):
             title=f"Roll back or soften the {cat} price increase",
             rationale=(
                 f"{cat} prices rose while comparable categories held steady, and {cat} order "
-                f"volume fell against them."
+                f"volume fell against them.{pattern}"
             ),
             addresses=[ev.id], confidence=ev.strength, impact=impact,
             assumptions=[
@@ -152,7 +161,7 @@ def _price_options(ev):
     review = DecisionOption(
         id=f"review_price_{cat}", kind="act",
         title=f"Review the {cat} price change",
-        rationale=f"{cat} prices moved against comparable categories and order volume moved with them.",
+        rationale=f"{cat} prices moved against comparable categories and order volume moved with them.{pattern}",
         addresses=[ev.id], confidence=ev.strength, impact=impact,
         assumptions=["The price change is the main reason order volume moved."],
         risks=["Margin per unit may be lower than before the change."],
@@ -181,9 +190,9 @@ def build_options(evidence) -> DecisionSet:
     options = []
     for ev in causes:
         if ev.id.startswith("stat_marketing_"):
-            options.extend(_marketing_options(ev))
+            options.extend(_marketing_options(ev, evidence))
         elif ev.id.startswith("stat_price_"):
-            options.extend(_price_options(ev))
+            options.extend(_price_options(ev, evidence))
 
     unresolved = ["Whether something else that changed in the same month contributed to the drop."]
     stakes = [(_name(e), e.details.get("revenue_at_stake") or 0) for e in causes]

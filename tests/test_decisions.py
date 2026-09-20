@@ -74,4 +74,6 @@ def test_report_records_the_human_choice(inv):
 def test_summary_is_split_into_readable_blocks(inv):
     summary = build_summary(inv.evidence)
     assert "\n\n" in summary                       # separate paragraphs
-    assert summary.count("\n- ") == 2               # one bullet per supported cause
+    # Two bullets for the supported causes, two for the order-pattern check on each.
+    assert "Does the order pattern match" in summary
+    assert summary.count("\n- ") == 4

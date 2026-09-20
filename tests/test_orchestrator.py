@@ -44,10 +44,13 @@ def run(toolkit, client=None):
 
 GOOD_SCRIPT = lambda: [
     turn(text("I'll confirm the metric moved first."), call(1, "baseline_trend", metric="revenue")),
-    turn(text("Revenue is down 23.9%, a strong signal. Now locating it."), call(2, "segment_breakdown", dimension="region")),
-    turn(text("North accounts for 45% of the change against a 26% share of prior revenue."), call(3, "segment_breakdown", dimension="category")),
-    turn(text("Electronics carries 60% of the change."), call(4, "marketing_effect")),
-    turn(text("North shows a strong marketing-spend association."), call(5, "price_effect")),
+    turn(text("Revenue is down 23.9%, a strong signal. Now splitting fewer orders from smaller orders."), call(2, "aov_volume_decomposition")),
+    turn(text("The change is in order count, down 22.4%. Now locating it."), call(3, "segment_breakdown", dimension="region")),
+    turn(text("North accounts for 45% of the change against a 26% share of prior revenue."), call(4, "segment_breakdown", dimension="category")),
+    turn(text("Electronics carries 60% of the change."), call(5, "aov_volume_decomposition", dimension="region")),
+    turn(text("North order count is down 47.6%."), call(6, "aov_volume_decomposition", dimension="category")),
+    turn(text("Electronics order count is down 41.9%."), call(7, "marketing_effect")),
+    turn(text("North shows a strong marketing-spend association."), call(8, "price_effect")),
     turn(text("Electronics shows a strong price association."),),
 ]
 
@@ -88,7 +91,7 @@ def test_tool_results_reach_the_model_as_json(toolkit):
 
 def test_invented_figures_are_blocked_and_replaced(toolkit):
     script = GOOD_SCRIPT()
-    script[1] = turn(text("Revenue is down about 31%, a disaster."), call(2, "segment_breakdown", dimension="region"))
+    script[1] = turn(text("Revenue is down about 31%, a disaster."), call(2, "aov_volume_decomposition"))
     events, inv = run(toolkit, FakeClient(script))
     assert len(inv.guardrail_blocks) >= 1
     assert "31" in inv.guardrail_blocks[0]["unsupported"]

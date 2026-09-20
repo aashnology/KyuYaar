@@ -22,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from data_loader import load_data  # noqa: E402
 from decisions import build_options  # noqa: E402
-from narration import label  # noqa: E402
+from decomposition import signature_check  # noqa: E402
+from narration import label, metric_note  # noqa: E402
 from orchestrator import investigate, make_client  # noqa: E402
 from report import build_report  # noqa: E402
 from toolkit import Toolkit  # noqa: E402
@@ -159,11 +160,12 @@ def causes_chart(evidence):
     return fig
 
 
-def evidence_card(ev):
+def evidence_card(ev, pattern=None):
     d = ev.details
     with st.container(border=True):
+        which = tag(metric_note(ev)) if metric_note(ev) else ""
         st.markdown(
-            f"{badge(ev.strength)} {tag(ev.evidence_type)} {tag(label(ev))}",
+            f"{badge(ev.strength)} {tag(ev.evidence_type)} {tag(label(ev))}{which}",
             unsafe_allow_html=True,
         )
         st.markdown(f"**{ev.hypothesis}**")
@@ -173,7 +175,12 @@ def evidence_card(ev):
             bits.append(f"p {d['p_value_text']}")
         if d.get("ci_low_pct") is not None:
             bits.append(f"95% interval {d['ci_low_pct']:+.1f}% to {d['ci_high_pct']:+.1f}%")
+        if d.get("history_std_change_pct") is not None:
+            bits.append(f"normal month-to-month swing about {d['history_std_change_pct']:.1f}%")
         st.caption(" · ".join(bits))
+        if pattern:
+            icon = {"consistent": "✅", "partial": "◐", "inconsistent": "⚠️"}[pattern["status"]]
+            st.markdown(f"{icon} **Order pattern.** {pattern['text']}")
 
         for c in ev.caveats:
             st.markdown(f"- {c}")
@@ -199,7 +206,8 @@ def render_event(ev):
         st.markdown(f"**Step {data['step']}** · {_call_text(data['tool'], data['args'])}")
     elif kind == "evidence":
         rows = [{
-            "Finding": label(e), "Strength": e.strength,
+            "Finding": label(e) + (f" · {metric_note(e)}" if metric_note(e) else ""),
+            "Strength": e.strength,
             "Key figure (%)": e.value, "Orders": e.sample_size,
         } for e in data["items"]]
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
@@ -234,7 +242,9 @@ def sidebar(client):
             st.markdown(
                 "**Strong / moderate / weak** rate how well the data supports a finding. "
                 "They combine effect size, statistical certainty and sample size. "
-                "They are not a measure of business importance, and none of them proves cause."
+                "They are not a measure of business importance, and none of them proves cause. "
+                "For orders versus order value, they rate how clearly a figure moved compared with "
+                "how much it normally swings from month to month."
             )
         with st.expander("Design rules"):
             st.markdown(
@@ -347,6 +357,7 @@ def screen_evidence(orders):
 
     groups = [
         ("What changed", "observation"),
+        ("Fewer orders, or smaller orders?", "decomposition"),
         ("Where the change is concentrated", "association"),
         ("Candidate causes tested", "statistical"),
     ]
@@ -354,7 +365,8 @@ def screen_evidence(orders):
     for title, etype in groups:
         items = sorted(
             [e for e in inv.evidence if e.evidence_type == etype],
-            key=lambda e: (order[e.strength], -abs(e.value or 0)),
+            # The overall split leads its group; segments follow by strength.
+            key=lambda e: (e.segment is not None and etype == "decomposition", order[e.strength], -abs(e.value or 0)),
         )
         if not items:
             continue
@@ -362,9 +374,11 @@ def screen_evidence(orders):
         notable = [e for e in items if e.strength != "weak"]
         weak = [e for e in items if e.strength == "weak"]
         for e in notable:
-            evidence_card(e)
+            evidence_card(e, signature_check(e, inv.evidence) if etype == "statistical" else None)
         if weak:
             heading = "Weak evidence (not supported as an explanation)" if notable or etype != "observation" else "Weak evidence"
+            if etype == "decomposition":
+                heading = "No clear change (not distinguishable from ordinary variation)"
             with st.expander(heading):
                 for e in weak:
                     evidence_card(e)

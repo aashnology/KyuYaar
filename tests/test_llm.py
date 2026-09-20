@@ -200,9 +200,12 @@ def test_blocked_or_empty_responses_raise():
 def test_full_investigation_through_the_gemini_adapter(toolkit):
     responses = [
         reply({"text": "Confirming the trend."}, fc("baseline_trend", {"metric": "revenue"})),
-        reply({"text": "Revenue is down 23.9%."}, fc("segment_breakdown", {"dimension": "region"})),
+        reply({"text": "Revenue is down 23.9%."}, fc("aov_volume_decomposition")),
+        reply({"text": "The change is in order count, down 22.4%."}, fc("segment_breakdown", {"dimension": "region"})),
         reply({"text": "North stands out."}, fc("segment_breakdown", {"dimension": "category"})),
-        reply({"text": "Electronics stands out."}, fc("marketing_effect")),
+        reply({"text": "Electronics stands out."}, fc("aov_volume_decomposition", {"dimension": "region"})),
+        reply({"text": "North order count is down 47.6%."}, fc("aov_volume_decomposition", {"dimension": "category"})),
+        reply({"text": "Electronics order count is down 41.9%."}, fc("marketing_effect")),
         reply({"text": "Marketing in North is supported."}, fc("price_effect")),
         reply({"text": "Revenue is down 23.9%. North and Electronics carry the change."}),
     ]
@@ -295,8 +298,11 @@ def test_steps_the_model_did_not_comment_on_still_get_a_readout(toolkit):
     # The model batches every tool into one turn and only writes a summary.
     responses = [
         reply(fc("baseline_trend", {"metric": "revenue"}),
+              fc("aov_volume_decomposition"),
               fc("segment_breakdown", {"dimension": "region"}),
               fc("segment_breakdown", {"dimension": "category"}),
+              fc("aov_volume_decomposition", {"dimension": "region"}),
+              fc("aov_volume_decomposition", {"dimension": "category"}),
               fc("marketing_effect"), fc("price_effect")),
         reply({"text": "Revenue is down 23.9%. North and Electronics carry the change."}),
     ]

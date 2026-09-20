@@ -6,6 +6,8 @@ guardrail rejects text the LLM wrote. Everything here is built from fields on
 the Evidence objects, so the numbers in it are correct by construction.
 """
 
+from decomposition import signature_check
+
 _STRENGTH_WORD = {"strong": "Strong", "moderate": "Moderate", "weak": "Weak"}
 
 
@@ -15,6 +17,51 @@ def label(ev) -> str:
         return ev.segment or "overall"
     dim, value = ev.segment.split("=", 1)
     return f"{value} ({dim})"
+
+
+def metric_note(ev) -> str:
+    """Which factor a decomposition finding is about; empty for other evidence."""
+    if ev.evidence_type != "decomposition":
+        return ""
+    return "orders" if ev.metric == "orders_change_pct" else "order value"
+
+
+def _move(ev):
+    return f"{'down' if ev.value < 0 else 'up'} {abs(ev.value):.1f}%"
+
+
+def _pairs(evidence):
+    """{segment: (orders_evidence, aov_evidence)} from decomposition evidence."""
+    by_seg = {}
+    for e in evidence:
+        if e.evidence_type != "decomposition" or e.value is None:
+            continue
+        by_seg.setdefault(e.segment, {})["orders" if e.metric == "orders_change_pct" else "aov"] = e
+    return {seg: (v["orders"], v["aov"]) for seg, v in by_seg.items() if len(v) == 2}
+
+
+def _split_sentence(name, orders, aov):
+    """One sentence on whether the change is fewer orders, smaller orders, or both."""
+    o_move, a_move = orders.strength != "weak", aov.strength != "weak"
+    o, a = _move(orders), _move(aov)
+    if o_move and not a_move:
+        return (
+            f"{name}: the change is in the number of orders ({o}; {orders.strength} evidence), "
+            f"not in order size (average order value {a}; no clear evidence it moved)."
+        )
+    if a_move and not o_move:
+        return (
+            f"{name}: the change is in order size (average order value {a}; {aov.strength} evidence), "
+            f"not in the number of orders ({o}; no clear evidence it moved)."
+        )
+    if o_move and a_move:
+        opposite = (orders.value < 0) != (aov.value < 0)
+        tail = " They move in opposite directions, so each partly offsets the other." if opposite else ""
+        return (
+            f"{name}: order count {o} ({orders.strength} evidence) and average order value "
+            f"{a} ({aov.strength} evidence).{tail}"
+        )
+    return f"{name}: neither order count ({o}) nor average order value ({a}) shows a clear change."
 
 
 def _notable(evidence):
@@ -52,6 +99,24 @@ def narrate_step(tool, args, evidence) -> str:
             + " This shows where the change sits, not why it happened."
         )
 
+    if tool == "aov_volume_decomposition":
+        pairs = _pairs(evidence)
+        dim = (args or {}).get("dimension")
+        if dim is None:
+            orders, aov = pairs.get(None, (None, None))
+            if orders is None:
+                return "The tool returned no evidence."
+            return _split_sentence("Overall (vs. the prior month)", orders, aov)
+        shown = [(seg, o, a) for seg, (o, a) in pairs.items() if o.strength != "weak" or a.strength != "weak"]
+        if not shown:
+            return (
+                f"No {dim} shows a clear move in either order count or average order value, "
+                f"so the split between fewer and smaller orders is not distinguishable from ordinary variation."
+            )
+        parts = [_split_sentence(label(o), o, a) for _, o, a in shown]
+        rest = f"The other {'regions' if dim == 'region' else 'categories'} show no clear move in either."
+        return " ".join(parts) + " " + rest
+
     if tool in ("marketing_effect", "price_effect"):
         driver = "marketing spend" if tool == "marketing_effect" else "pricing"
         unit = "region" if tool == "marketing_effect" else "category"
@@ -84,12 +149,19 @@ def build_summary(evidence) -> str:
     parts = []
     if obs:
         parts.append(obs.hypothesis + ".")
+    overall = _pairs(evidence).get(None)
+    if overall:
+        parts.append(_split_sentence("Overall (vs. the prior month)", *overall))
     if conc:
         names = ", ".join(label(e) for e in conc)
         parts.append(f"The change is concentrated in {names}.")
     if causes:
         bullets = "\n".join(f"- {e.hypothesis} ({e.strength} evidence)" for e in causes)
         parts.append("Explanations the data supports:\n" + bullets)
+        checks = [signature_check(e, evidence) for e in causes]
+        lines = [c["text"] for c in checks if c]
+        if lines:
+            parts.append("Does the order pattern match each explanation?\n" + "\n".join(f"- {t}" for t in lines))
         parts.append(
             "These are associations, not proof of cause: the driver and the order "
             "change happened in the same month, so other simultaneous changes cannot "

@@ -9,6 +9,7 @@ what lets the UI show where a number came from.
 
 from dataclasses import asdict
 
+from decomposition import aov_volume_decomposition
 from evidence import Evidence, baseline_trend, segment_breakdown
 from effects import marketing_effect, price_effect
 
@@ -21,6 +22,7 @@ METRICS = ["revenue", "quantity"]
 SOURCE_FILE = {
     "baseline_trend": "src/evidence.py",
     "segment_breakdown": "src/evidence.py",
+    "aov_volume_decomposition": "src/decomposition.py",
     "marketing_effect": "src/effects.py",
     "price_effect": "src/effects.py",
 }
@@ -53,6 +55,21 @@ TOOL_SPECS = [
                 "metric": {"type": "string", "enum": METRICS},
             },
             "required": ["dimension"],
+        },
+    },
+    {
+        "name": "aov_volume_decomposition",
+        "description": (
+            "Split the latest month's revenue change into a part from the number of orders and a "
+            "part from average order value, and test each against how much it normally moves "
+            "month to month. Answers whether the business is getting fewer orders or smaller "
+            "orders. Call it with no dimension for the overall picture, or with region or "
+            "category for each segment."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"dimension": {"type": "string", "enum": DIMENSIONS}},
+            "required": [],
         },
     },
     {
@@ -105,6 +122,12 @@ class Toolkit:
             self._check("metric", metric, METRICS)
             result = segment_breakdown(self.orders, dimension_col=dimension, metric_col=metric)
             clean = {"dimension": dimension, "metric": metric}
+        elif name == "aov_volume_decomposition":
+            dimension = args.get("dimension")
+            if dimension is not None:
+                self._check("dimension", dimension, DIMENSIONS)
+            result = aov_volume_decomposition(self.orders, dimension_col=dimension)
+            clean = {} if dimension is None else {"dimension": dimension}
         elif name == "marketing_effect":
             result = marketing_effect(self.orders, self.marketing)
             clean = {}
