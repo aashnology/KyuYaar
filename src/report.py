@@ -7,10 +7,11 @@ def _fmt(x):
     return "-" if x is None else (f"{x:,.1f}" if isinstance(x, float) else str(x))
 
 
-def build_report(inv, decision_set, chosen_id=None, note="", scenarios=None) -> str:
+def build_report(inv, decision_set, chosen_id=None, note="", scenarios=None, followups=None) -> str:
     scenarios = scenarios or {}
+    chosen_here = any(o.id == chosen_id for o in decision_set.options)
     lines = [
-        "# KyuYaar decision memo", "",
+        "# KyuYaar decision memo" if chosen_here else "# KyuYaar investigation report", "",
         f"**Question:** {inv.question}", "",
         "## Summary", "", inv.summary, "",
         "## Evidence chain", "",
@@ -24,6 +25,18 @@ def build_report(inv, decision_set, chosen_id=None, note="", scenarios=None) -> 
         lines.append(
             f"| {ev.strength} | {ev.evidence_type} | {ev.hypothesis} | {ev.sample_size} | {src} |"
         )
+    if followups:
+        lines += ["", "## Follow-up questions", ""]
+        for qa in followups:
+            how = ("written by the model, figures checked" if qa.source == "llm"
+                   else "generated from the evidence")
+            lines += [f"**Q:** {qa.question}", "", f"**A:** {qa.text}", ""]
+            meta = f"_{how}_"
+            if qa.evidence_ids:
+                meta += "; evidence used: " + ", ".join(f"`{i}`" for i in qa.evidence_ids)
+            elif not qa.covered:
+                meta += "; not answerable from this investigation's evidence"
+            lines += [meta, ""]
     lines += ["", "## Options considered", ""]
     for opt in decision_set.options:
         mark = " (chosen)" if opt.id == chosen_id else ""

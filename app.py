@@ -3,8 +3,9 @@ KyuYaar -- Streamlit front end.
 
 Four screens: command center -> investigation progress -> evidence -> decision.
 The app only renders. All numbers come from src/evidence.py and src/effects.py,
-all wording from the orchestrator, all options from src/decisions.py and all
-projections from src/scenario.py.
+all wording from the orchestrator (follow-up answers from src/followup.py), all
+options from src/decisions.py, all projections from src/scenario.py and all
+trend series from src/trends.py.
 
 Run with:  streamlit run app.py
 """
@@ -21,9 +22,12 @@ import streamlit.components.v1 as components
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
+from charts import STRENGTH_COLOR, driver_figure, metric_figure  # noqa: E402
 from data_loader import load_data  # noqa: E402
+from decision_log import DecisionLog, record_from_decision  # noqa: E402
 from decisions import build_options  # noqa: E402
 from decomposition import signature_check  # noqa: E402
+from followup import MAX_QUESTION_CHARS, answer_question  # noqa: E402
 from narration import label, metric_note  # noqa: E402
 from orchestrator import investigate, make_client  # noqa: E402
 from report import build_report  # noqa: E402
@@ -32,9 +36,9 @@ from scenario import (  # noqa: E402
     Assumptions, run_scenario,
 )
 from toolkit import Toolkit  # noqa: E402
+from trends import GROUPS, METRICS, driver_trend, metric_by_group  # noqa: E402
 
 DEFAULT_QUESTION = "Revenue dropped last month. Why did it happen, and what should I do?"
-STRENGTH_COLOR = {"strong": "#0f766e", "moderate": "#b45309", "weak": "#6b7280"}
 SCREENS = [("command", "1 · Command center"), ("progress", "2 · Investigation"),
            ("evidence", "3 · Evidence"), ("decision", "4 · Decision")]
 KIND_LABEL = {"act": "Act", "test": "Test first", "hold": "Hold"}
@@ -67,6 +71,7 @@ def init_state():
     defaults = {
         "screen": "command", "pending": None, "inv": None, "decisions": None,
         "chosen": None, "note": "", "question": DEFAULT_QUESTION,
+        "followups": [], "pending_followup": None, "saved_record": None, "trend_cache": {},
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -97,6 +102,10 @@ def start_investigation():
     st.session_state.decisions = None
     st.session_state.chosen = None
     st.session_state.note = ""
+    st.session_state.followups = []
+    st.session_state.pending_followup = None
+    st.session_state.saved_record = None
+    st.session_state.trend_cache = {}
     st.session_state.screen = "progress"
 
 
@@ -165,7 +174,16 @@ def causes_chart(evidence):
     return fig
 
 
-def evidence_card(ev, pattern=None):
+def cached_driver_trend(ev, orders, marketing):
+    """Trend series for a finding, computed once per investigation (the price
+    index walks every month pair, which is slow enough to notice on each rerun)."""
+    cache = st.session_state.trend_cache
+    if ev.id not in cache:
+        cache[ev.id] = driver_trend(ev, orders, marketing)
+    return cache[ev.id]
+
+
+def evidence_card(ev, pattern=None, trend=None):
     d = ev.details
     with st.container(border=True):
         which = tag(metric_note(ev)) if metric_note(ev) else ""
@@ -194,6 +212,15 @@ def evidence_card(ev, pattern=None):
 
         for c in ev.caveats:
             st.markdown(f"- {c}")
+
+        if trend is not None:
+            with st.expander("Show the trend behind this finding"):
+                st.plotly_chart(driver_figure(trend, ev.strength), width="stretch", key=f"trend_{ev.id}")
+                st.caption(
+                    "Both panels are indexed so the average of the earlier months is 100. The dashed "
+                    "line is the comparison group the finding was measured against. Drawn from the "
+                    "same order and marketing data as the finding; nothing here is modelled."
+                )
 
         with st.expander("How this was computed"):
             prov = d.get("provenance", {})
@@ -349,7 +376,72 @@ def screen_progress(toolkit, client, nav_slot):
     st.button("See the evidence →", type="primary", on_click=go_to, args=("evidence",))
 
 
-def screen_evidence(orders):
+def trends_section(orders):
+    st.subheader("Trends by metric")
+    a, b = st.columns(2)
+    metric = a.radio("Metric", list(METRICS), format_func=METRICS.get, horizontal=True, key="trend_metric")
+    group = b.radio(
+        "Split by", ["overall", *GROUPS], horizontal=True, key="trend_group",
+        format_func=lambda g: "Overall" if g == "overall" else GROUPS[g],
+    )
+    frame = metric_by_group(orders, metric, None if group == "overall" else group)
+    title = METRICS[metric] + " by month" + ("" if group == "overall" else f", by {group}")
+    st.plotly_chart(metric_figure(frame, title, money=metric != "orders"), width="stretch", key="trend_metric_chart")
+    st.caption("The red ring marks the latest month, the one under investigation.")
+
+
+def queue_followup(question=None):
+    text = question if question is not None else st.session_state.get("followup_text", "")
+    if text and text.strip():
+        st.session_state.pending_followup = text.strip()
+
+
+def followup_section(client):
+    inv = st.session_state.inv
+    st.subheader("Ask about these findings")
+    st.caption(
+        "Answers come only from the evidence above. Nothing new is computed, and a question "
+        "the investigation did not test is answered as not tested."
+    )
+    top = next((e for e in inv.evidence if e.evidence_type == "statistical" and e.strength != "weak"), None)
+    examples = ["Are orders smaller or fewer?", "How sure are you?"]
+    if top is not None:
+        examples.insert(0, f"What does the evidence say about {top.segment.split('=', 1)[1]}?")
+    cols = st.columns(len(examples))
+    for i, (col, text) in enumerate(zip(cols, examples)):
+        col.button(text, key=f"example_{i}", on_click=queue_followup, args=(text,), width="stretch")
+    with st.form("followup_form", clear_on_submit=True, border=False):
+        st.text_input(
+            "Your question", key="followup_text", max_chars=MAX_QUESTION_CHARS,
+            placeholder="For example: is the loss in one channel or across the region?",
+        )
+        st.form_submit_button("Ask", on_click=queue_followup)
+
+    pending = st.session_state.pending_followup
+    if pending is not None:
+        st.session_state.pending_followup = None
+        use_live = client is not None and st.session_state.get("engine", "").startswith("Live")
+        with st.spinner("Checking the evidence…"):
+            st.session_state.followups.append(
+                answer_question(pending, inv, client=client if use_live else None))
+
+    by_id = {e.id: e for e in inv.evidence}
+    for qa in reversed(st.session_state.followups):
+        with st.container(border=True):
+            st.markdown(f"**{qa.question}**")
+            for note in qa.notes:
+                st.warning(note)
+            st.markdown(qa.text)
+            who = "written by the model, figures checked" if qa.source == "llm" else "generated from the evidence"
+            st.caption(f"Answer · {who}")
+            if qa.evidence_ids:
+                st.caption("Evidence used: " + " · ".join(
+                    f"`{i}` ({by_id[i].strength})" for i in qa.evidence_ids if i in by_id))
+            elif not qa.covered:
+                st.caption("Not answerable from this investigation's evidence.")
+
+
+def screen_evidence(orders, marketing, client=None):
     inv = st.session_state.inv
     st.header("Evidence")
     st.info(inv.summary)
@@ -364,6 +456,7 @@ def screen_evidence(orders):
     fig = causes_chart(inv.evidence)
     if fig is not None:
         right.plotly_chart(fig, width="stretch")
+    trends_section(orders)
 
     groups = [
         ("What changed", "observation"),
@@ -391,7 +484,8 @@ def screen_evidence(orders):
                 pattern = {**e.details["channel_pattern"], "title": "Channel pattern"}
             else:
                 pattern = None
-            evidence_card(e, pattern)
+            trend = cached_driver_trend(e, orders, marketing) if etype == "statistical" else None
+            evidence_card(e, pattern, trend)
         if weak:
             heading = "Weak evidence (not supported as an explanation)" if notable or etype != "observation" else "Weak evidence"
             if etype == "decomposition":
@@ -400,10 +494,31 @@ def screen_evidence(orders):
                 for e in weak:
                     evidence_card(e)
 
+    followup_section(client)
+
+    st.divider()
+    report = build_report(inv, st.session_state.decisions, None, "", None, st.session_state.followups)
+    st.download_button(
+        "Download investigation report (.md)", report, file_name="kyuyaar_investigation_report.md",
+        mime="text/markdown",
+    )
     st.button("Continue to the decision →", type="primary", on_click=go_to, args=("decision",))
 
 
+def save_decision():
+    """Runs as a button callback, before the page is redrawn, so the button is
+    already disabled when the person sees it and one click makes one record."""
+    ss = st.session_state
+    if ss.chosen is None or ss.saved_record is not None:
+        return
+    scenario = ss.get("_scenarios", {}).get(ss.chosen)
+    record = DecisionLog().append(record_from_decision(ss.inv, ss.decisions, ss.chosen, ss.note, scenario))
+    ss.saved_record = record.record_id
+
+
 def choose(option_id):
+    if st.session_state.chosen != option_id:
+        st.session_state.saved_record = None
     st.session_state.chosen = option_id
 
 
@@ -523,13 +638,37 @@ def screen_decision(orders):
 
     st.divider()
     st.text_area("Note for the record (optional)", key="note", height=80)
-    memo = build_report(inv, decision_set, st.session_state.chosen, st.session_state.note, scenarios)
-    st.download_button(
+    st.session_state["_scenarios"] = scenarios      # read by save_decision()
+    memo = build_report(inv, decision_set, st.session_state.chosen, st.session_state.note,
+                        scenarios, st.session_state.followups)
+    chosen = st.session_state.chosen
+    left, right = st.columns(2)
+    left.download_button(
         "Download decision memo (.md)", memo, file_name="kyuyaar_decision_memo.md",
-        mime="text/markdown", disabled=st.session_state.chosen is None,
+        mime="text/markdown", disabled=chosen is None, width="stretch",
     )
-    if st.session_state.chosen is None:
-        st.caption("Choose an option to enable the memo.")
+    log = DecisionLog()
+    saved = st.session_state.saved_record
+    right.button(
+        "Save to decision log", disabled=chosen is None or saved is not None,
+        on_click=save_decision, width="stretch",
+    )
+    if chosen is None:
+        st.caption("Choose an option to enable the memo and the decision log.")
+    if saved:
+        st.success(f"Saved to the decision log as {saved}, awaiting an outcome.")
+    records = log.all()
+    if records:
+        with st.expander(f"Decision log ({len(records)} saved)"):
+            st.dataframe(pd.DataFrame([{
+                "Saved": r.recorded_at, "Option": r.option_title, "Data through": r.data_period,
+                "Status": r.status.replace("_", " "),
+            } for r in records]), hide_index=True, width="stretch")
+            st.caption(
+                "Stored in a local file on this machine. Each record keeps its evidence, assumptions "
+                "and projection, and an empty outcome. Outcomes are entered by a person once the real "
+                "months exist; nothing here estimates them."
+            )
 
 
 # ------------------------------------------------------------------ main ---
@@ -553,7 +692,7 @@ def main():
     elif screen == "progress":
         screen_progress(toolkit, client, nav_slot)
     elif screen == "evidence" and st.session_state.inv:
-        screen_evidence(orders)
+        screen_evidence(orders, marketing, client)
     elif screen == "decision" and st.session_state.inv:
         screen_decision(orders)
     else:

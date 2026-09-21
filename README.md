@@ -28,6 +28,7 @@ KyuYaar doesn't autonomously decide anything. It surfaces evidence-backed option
 | 3 | `aov_volume_decomposition()`: fewer orders vs. smaller orders, and a check of each supported cause against the order pattern it predicts | done |
 | 4 | `marketing_channel_analysis()`: which paid channel, whether the loss is concentrated in it or region-wide, and whether it got less effective | done |
 | 5 | `run_scenario()`: what each option is worth under assumptions you set, with the arithmetic shown step by step | done |
+| 6 | Follow-up questions answered from the evidence, per-metric and per-cause trend charts, a downloadable investigation report, and the decision log data structure | done; the outcome-tracking loop is documented future work |
 
 ## Run it
 
@@ -58,6 +59,7 @@ python scripts/verify_layer2.py   # checks the investigation against the injecte
 python scripts/verify_layer3.py   # orders vs. order value, ground-truth check and false-alarm count
 python scripts/verify_layer4.py   # marketing by channel, ground-truth check and false-alarm count
 python scripts/verify_layer5.py   # scenario arithmetic recomputed from the raw CSVs, sensitivity to the assumptions
+python scripts/verify_layer6.py   # follow-up answers vs. the guardrail and ground truth, chart series vs. findings, decision log round trip
 python -m pytest                  # full test suite
 ```
 
@@ -113,6 +115,27 @@ Channel evidence is its own type (`channel`) and is never counted as a separate 
 
 Every Evidence object records the tool and arguments that produced it, and the UI shows this under "How this was computed".
 
+### Asking about the findings
+
+The evidence screen has a question box. `answer_question()` in `src/followup.py` answers from the Evidence objects the investigation already produced. It runs no tool and computes nothing new, and a question the investigation did not test is answered as not tested, with a list of what it did cover.
+
+- **Offline.** Keyword retrieval picks the findings a question points at (a named region, category or channel; a topic such as orders, order value, marketing, price, "where", "why", "how sure"), ranks them by strength and answers with sentences built from the Evidence fields, so every figure is correct by construction. A weak-only match says nothing here is strong enough to support as an explanation.
+- **Live.** One model call with no tools. The model receives the evidence as JSON, must cite the ids behind its answer in square brackets, and its prose goes through the same numeric guardrail as the investigation readouts. An answer with a figure that is not in the evidence, or with a cited id that does not exist, is discarded and replaced by the offline answer, with a note saying why. A figure the person typed in the question may be repeated back; nothing else is exempt.
+- **Every answer lists the evidence it used**, so the sentence can be checked against the finding behind it. Recommendations are not made in this box: it points to the Decision screen.
+
+### Seeing the move
+
+`src/trends.py` builds the series behind the charts from the same order and marketing tables the findings came from. Nothing is modelled.
+
+- **Trends by metric.** Revenue, orders or average order value by month, overall or split by region, category or channel, with the latest month marked.
+- **The trend behind a finding.** Each supported cause has a two-panel chart: the driver (marketing spend, or like-for-like price using the same product matching as `price_effect`) above, orders below, each drawn against the comparison segments the finding was measured against. Both are indexed so the average of the earlier months is 100. The chart's last-month change reproduces the finding's own `driver_change_pct`, `raw_orders_change_pct` and `control_orders_change_pct` (checked in `verify_layer6.py`).
+
+### The report and the decision log
+
+- **Report.** The evidence screen downloads a Markdown investigation report at any point; once an option is chosen the decision screen downloads the memo. Both include the follow-up questions asked, the answers, and the evidence each used.
+- **Decision log.** "Save to decision log" stores the chosen option, the evidence behind it as it stood, the assumptions the person set and the projection, as one JSON line in `decision_log/decisions.jsonl` (git-ignored; `KYUYAAR_DECISION_LOG` moves it). Every record has an empty `outcome` and the status `awaiting_outcome`.
+- **What is deliberately not built.** Closing the loop (did the projected recovery happen?) needs months of data after the decision, and the dataset ends where the decision is made. `DecisionLog.record_outcome()` exists so the structure is complete, and it stores only figures a person supplies. No screen calls it, and nothing estimates or back-fills an outcome. Comparing projected against observed is future work.
+
 ## What was verified
 
 On the synthetic dataset (a 45% cut to paid marketing in North and a 10% price rise on Electronics, both in the final month):
@@ -143,14 +166,24 @@ Layer 5 on the same dataset:
 - Restoring North's spend is marginal on gross profit. Full restoration costs about 11,000 a month against about 12,700 of gross profit at stake, so the break-even share is 130% over 3 months with a 1-month lag, 104% over 6, 95% over 12 and 91% over 24. The Electronics rollback breaks even at 55.5% of the revenue at stake won back. This is a property of the generator's spend level, not a tuned result.
 - Every assumption is a slider, and the tests check that a marketing option's revenue and gross profit never fall as the share won back rises, that a test scales the act option exactly by the share treated, and that a lag as long as the horizon recovers nothing and says so.
 
+Layer 6 on the same dataset:
+
+- All 10 offline answers to a battery of questions pass the numeric guardrail and cite only evidence that exists. "Why did revenue drop?" surfaces both injected causes (North marketing, Electronics price); asking about each of the 7 untouched regions and categories reports weak evidence and never strong or moderate; questions about customer segments and "what should I do?" are answered as not tested and left to the Decision screen.
+- The chart series match the findings they illustrate: North's spend moves -33.8% and its orders -47.6% in both the chart and the finding, and Electronics' like-for-like price +10.0%, orders -41.9%.
+- The live follow-up path (guardrail, citation check, fallbacks, no-tool request for both providers) is tested against scripted fakes, not the real APIs.
+
 ## Known limits
+
+- Follow-up questions are answered one at a time with no memory of the earlier ones, so "and South?" does not carry over. Offline retrieval is keyword-based: a differently worded question can be reported as not tested when the evidence does exist. In live mode the guardrail checks figures and cited ids, not whether the model's claim about them is right.
+- Follow-ups cover the evidence only, not the decision options or projections; those stay on the Decision screen.
+- The decision log is a local file: on a hosted deployment with an ephemeral disk it does not persist. The investigation report is Markdown, so it carries the findings but not the charts.
 
 - Layer 5 projections rest on the share you assume the option wins back. The data measures the drop, not how much of it returns.
 - Gross margin is product cost only. Shipping, returns, payment fees and staff time are left out, so gross profit here is an upper bound on profit.
 - Marketing spend is paid from month 1 and revenue arrives after the lag, which penalises short horizons; payback after the horizon is not counted. The sensitivity is in `verify_layer5.py`.
 - The price scenario assumes the price goes fully back to its earlier level. A partial "soften" is not modelled, and neither is the dip in the lag months, when the lower price applies before demand returns.
 
-- Both live provider paths (Gemini over REST, Claude via the SDK) are tested against scripted fake transports, not the real APIs, during development. Run `scripts/check_live.py` once with a key before relying on them.
+- Both live provider paths (Gemini over REST, Claude via the SDK), for investigations and for follow-up questions, are tested against scripted fake transports, not the real APIs, during development. Run `scripts/check_live.py` once with a key before relying on them.
 - Evidence is association, not proof of cause. A driver and an order change in the same month cannot rule out another simultaneous change; every supported finding says so.
 - The two effects overlap in North x Electronics and the data cannot separate their interaction. Options say so, and impact estimates for the two are not additive.
 - One dataset, one investigation type (why did revenue change). Customer segment is not exposed to the orchestrator: small segments need a significance test on the association itself before they can be ranked reliably. Channel is covered by a controlled test (`marketing_channel_analysis`), not by ranking.

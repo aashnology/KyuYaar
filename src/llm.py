@@ -69,9 +69,12 @@ class AnthropicAdapter:
         self.messages = [{"role": "user", "content": question}]
 
     def next_turn(self) -> Turn:
+        kwargs = {}
+        if self.tools:          # a plain question-and-answer call has no tools to offer
+            kwargs["tools"] = self.tools
         resp = self.client.messages.create(
             model=self.model, max_tokens=1500, system=self.system,
-            tools=self.tools, messages=self.messages,
+            messages=self.messages, **kwargs,
         )
         self.messages.append({"role": "assistant", "content": resp.content})
         return Turn(
@@ -179,10 +182,9 @@ class GeminiAdapter:
         self._last_call = self._clock()
 
     def start(self, system, tools, question):
-        self._static = {
-            "system_instruction": {"parts": [{"text": system}]},
-            "tools": [{"function_declarations": [_to_gemini_tool(t) for t in tools]}],
-        }
+        self._static = {"system_instruction": {"parts": [{"text": system}]}}
+        if tools:               # Gemini rejects an empty function_declarations list
+            self._static["tools"] = [{"function_declarations": [_to_gemini_tool(t) for t in tools]}]
         self.contents = [{"role": "user", "parts": [{"text": question}]}]
 
     def _request(self):
