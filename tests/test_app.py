@@ -143,3 +143,29 @@ def test_choosing_then_saving_writes_one_record_awaiting_an_outcome(monkeypatch,
     # Choosing a different option makes a new record possible.
     next(b for b in at.button if b.key == "choose_hold_and_monitor").click().run()
     assert not save().disabled
+
+
+def test_switching_to_a_scenario_with_no_cause_ends_in_insufficient_data():
+    at = AppTest.from_file(APP, default_timeout=120).run()
+    at.selectbox(key="scenario_choice").select("demand_shock").run()
+    assert not at.exception
+    assert any("Demand falls everywhere" in c.value for c in at.sidebar.caption)
+
+    at = click(at, "Investigate")
+    assert not at.exception
+    at = click(at, "See the evidence")
+    at = click(at, "Continue to the decision")
+    assert not at.exception
+    assert any("does not single out a cause" in w.value for w in at.warning)
+
+
+def test_changing_the_dataset_clears_an_earlier_investigation():
+    at = AppTest.from_file(APP, default_timeout=120).run()
+    at = click(at, "Investigate")
+    assert at.session_state["inv"] is not None
+    at = click(at, "1 ·")
+    at.selectbox(key="scenario_choice").select("channel_loss").run()
+    assert at.session_state["inv"] is None
+    at = click(at, "Investigate")
+    ids = [e.id for e in at.session_state["inv"].evidence if e.evidence_type == "statistical" and e.strength != "weak"]
+    assert ids == ["stat_marketing_West"]

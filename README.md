@@ -29,6 +29,7 @@ KyuYaar doesn't autonomously decide anything. It surfaces evidence-backed option
 | 4 | `marketing_channel_analysis()`: which paid channel, whether the loss is concentrated in it or region-wide, and whether it got less effective | done |
 | 5 | `run_scenario()`: what each option is worth under assumptions you set, with the arithmetic shown step by step | done |
 | 6 | Follow-up questions answered from the evidence, per-metric and per-cause trend charts, a downloadable investigation report, and the decision log data structure | done; the outcome-tracking loop is documented future work |
+| 7 | Three more datasets with known ground truth (a channel-only loss, a demand fall no data explains, and a flat month), checked over many random draws; upload your own four CSVs with validation | done |
 
 ## Run it
 
@@ -60,7 +61,15 @@ python scripts/verify_layer3.py   # orders vs. order value, ground-truth check a
 python scripts/verify_layer4.py   # marketing by channel, ground-truth check and false-alarm count
 python scripts/verify_layer5.py   # scenario arithmetic recomputed from the raw CSVs, sensitivity to the assumptions
 python scripts/verify_layer6.py   # follow-up answers vs. the guardrail and ground truth, chart series vs. findings, decision log round trip
+python scripts/verify_layer7.py   # every scenario over 10 random draws (pass a number for more), false-cause count, messy-upload demo
 python -m pytest                  # full test suite
+```
+
+The app opens on the original dataset. **Data** on the first screen switches between the demo scenarios and an upload of your own files (see "Layer 7" below).
+
+```bash
+python scripts/generate_data.py --all                    # rewrite every scenario's CSVs (seeded, so the files do not change)
+python scripts/generate_data.py --scenario channel_loss  # one scenario
 ```
 
 ## How an investigation works
@@ -136,6 +145,31 @@ The evidence screen has a question box. `answer_question()` in `src/followup.py`
 - **Decision log.** "Save to decision log" stores the chosen option, the evidence behind it as it stood, the assumptions the person set and the projection, as one JSON line in `decision_log/decisions.jsonl` (git-ignored; `KYUYAAR_DECISION_LOG` moves it). Every record has an empty `outcome` and the status `awaiting_outcome`.
 - **What is deliberately not built.** Closing the loop (did the projected recovery happen?) needs months of data after the decision, and the dataset ends where the decision is made. `DecisionLog.record_outcome()` exists so the structure is complete, and it stores only figures a person supplies. No screen calls it, and nothing estimates or back-fills an outcome. Comparing projected against observed is future work.
 
+## Layer 7: is it tuned to one dataset?
+
+Everything up to Layer 6 was checked against one synthetic dataset with two injected causes. That leaves the obvious question of whether the system only works there. The generator (`src/synthetic.py`) now builds four scenarios, each with a known answer, and `tests/test_scenarios.py` and `scripts/verify_layer7.py` check the investigation against them.
+
+| Scenario | What is injected | Correct answer |
+|---|---|---|
+| `default` | Paid marketing in North cut 45%, Electronics prices +10%; both cost orders | North marketing and Electronics price supported, nothing else |
+| `channel_loss` | A Paid-heavy business; Paid spend in West cut 70% and only West's Paid orders fall | West marketing supported, and the channel test places the loss in Paid, not the whole region |
+| `demand_shock` | Orders fall 25% in every region and category; spend and prices unchanged | No cause supported; the decision layer ends in "insufficient data" and proposes only to hold and gather more |
+| `flat` | Nothing | No cause supported |
+
+The default scenario's four CSVs are byte-identical to before (a test regenerates and compares). The other three are committed under `data/scenarios/` and are reproducible from `scripts/generate_data.py --all`.
+
+Two design points matter for how far this proves anything. The scenarios were checked over many random draws, not the one seed each ships with, so a lucky seed cannot carry the result. And the no-cause scenarios are the test that counts: the risk in a system like this is producing a plausible explanation when the data has none.
+
+### Bring your own data
+
+`src/validation.py` reads four CSVs and either accepts them or says exactly what to fix. It never changes data silently and never crashes on it.
+
+- **Schema.** Required columns are listed in the app. Header case, spaces and hyphens are matched loosely (`Order Date` works); a missing column is named, with a rename suggestion when a close one exists. Semicolon-separated files and Latin-1 encoding are read.
+- **Messy values.** Text such as `$1,234.50` is read as a number and the count reported. A few unusable rows (blank or unparseable values, non-positive quantity, negative revenue, repeated `order_id`, orders whose product or customer is unknown) are excluded and counted with the reason and an example. More than 5% of a table unusable is an error, because that usually means the wrong file. Spellings that differ only by capitalisation are merged and reported.
+- **Keys.** Repeated `product_id` or `customer_id` in a reference table is an error, since it would multiply orders in the join.
+- **Enough data to say anything.** Fewer than 3 months of orders is an error, fewer than 8 a warning (the orders-versus-order-value check needs about that much history). A latest month that ends before the month does is flagged, because every figure for a partial month looks like a drop; a checkbox leaves it out. Marketing that stops before the orders do, regions that never match between files, and a single region or category (nothing to compare against) are errors.
+- **Last line of defence.** After cleaning, the standard investigation plan runs once. A shape the tools cannot handle comes back as a readable error instead of a traceback.
+
 ## What was verified
 
 On the synthetic dataset (a 45% cut to paid marketing in North and a 10% price rise on Electronics, both in the final month):
@@ -172,6 +206,13 @@ Layer 6 on the same dataset:
 - The chart series match the findings they illustrate: North's spend moves -33.8% and its orders -47.6% in both the chart and the finding, and Electronics' like-for-like price +10.0%, orders -41.9%.
 - The live follow-up path (guardrail, citation check, fallbacks, no-tool request for both providers) is tested against scripted fakes, not the real APIs.
 
+Layer 7, over 20 random draws of each scenario (`python scripts/verify_layer7.py 20`, seeds 1000 to 1019):
+
+- `default`: North marketing and Electronics price both recovered in 20 of 20 draws; 0 false causes.
+- `channel_loss`: West marketing recovered in 20 of 20 draws; 0 false causes. The channel test placed the loss in West's Paid channel on the committed draw (Paid orders -70.0% against +3.9% in West's other channels).
+- `demand_shock` and `flat`: 0 false causes in 40 of 40 draws, and all 40 ended in "insufficient data" with only a hold option. On `demand_shock` revenue was down 14.6% to 27.6% against baseline and the system still declined to name a cause.
+- The validator is covered by 22 tests (missing files and columns, currency text, bad rows, duplicate keys, partial months, short history, marketing that ends early, non-matching regions, a tool failure), and the clean dataset passes through the upload path with the same figures as the folder loader.
+
 ## Known limits
 
 - Follow-up questions are answered one at a time with no memory of the earlier ones, so "and South?" does not carry over. Offline retrieval is keyword-based: a differently worded question can be reported as not tested when the evidence does exist. In live mode the guardrail checks figures and cited ids, not whether the model's claim about them is right.
@@ -186,12 +227,18 @@ Layer 6 on the same dataset:
 - Both live provider paths (Gemini over REST, Claude via the SDK), for investigations and for follow-up questions, are tested against scripted fake transports, not the real APIs, during development. Run `scripts/check_live.py` once with a key before relying on them.
 - Evidence is association, not proof of cause. A driver and an order change in the same month cannot rule out another simultaneous change; every supported finding says so.
 - The two effects overlap in North x Electronics and the data cannot separate their interaction. Options say so, and impact estimates for the two are not additive.
-- One dataset, one investigation type (why did revenue change). Customer segment is not exposed to the orchestrator: small segments need a significance test on the association itself before they can be ranked reliably. Channel is covered by a controlled test (`marketing_channel_analysis`), not by ranking.
+- One investigation type (why did revenue change), tested on four synthetic scenarios and never on real data. Customer segment is not exposed to the orchestrator: small segments need a significance test on the association itself before they can be ranked reliably. Channel is covered by a controlled test (`marketing_channel_analysis`), not by ranking.
 - The orders-vs-order-value comparison uses the prior month, while `baseline_trend` uses the average of all earlier months, so the two headline percentages differ (revenue -24.9% vs. prior month, -23.9% vs. baseline). The summary labels which basis each figure uses.
 - Order count and AOV are graded against only about ten earlier month-on-month changes, so the noise estimate is itself rough. Some findings sit close to a bar (Electronics AOV p = 0.049; South and Beauty order count p = 0.061 and 0.053, both graded weak). A month-length caveat appears when the two months differ in days.
 - Channel cells are small (about 20 to 120 orders a month), so the channel test has less power than the regional one. North / Paid grades moderate where the regional North finding grades strong; a real Paid effect could be missed, which is why a weak cell reads "not supported", not "no effect".
-- Which channel an order belongs to depends on how the channel field is attributed (last touch, first touch, self-reported). The tool takes the recorded field at face value and says so on every supported cell. In this synthetic data the channel on each order is drawn independently of spend, so a Paid-specific effect cannot appear in it; that path is covered by constructed test worlds instead.
+- Which channel an order belongs to depends on how the channel field is attributed (last touch, first touch, self-reported). The tool takes the recorded field at face value and says so on every supported cell. In the default dataset the channel on each order is drawn independently of spend, so a Paid-specific effect cannot appear in it; the `channel_loss` scenario and constructed test worlds cover that path.
 - `marketing.csv` impressions are not used yet. Cost per thousand impressions would separate "media got more expensive" from "the ads converted worse".
 - AOV blends products, so a fall can mean a shift in what is bought rather than smaller baskets. The tool does not separate mix from price-per-item; that would be a further split.
 - `baseline_trend` compares calendar-month totals, so a short month (February) can read as a drop. Per-day normalisation is not implemented.
 - The dataset is synthetic. Effect sizes here are much cleaner than real data would be.
+- Layer 7 shows the system does not invent a cause on data built to contain none. It does not show how it behaves on real data, where several things change at once, orders are attributed imperfectly and history is short. The upload path is where that would be found.
+- On a uniform demand fall, the per-segment "share of the revenue change" (Layer 1) still ranks some regions and categories as strong. Revenue by segment is noisy month to month (product mix), and a significance gate on it was tried and rejected because it also removes the real North and Electronics signal in the default dataset, whose cause tests work on order counts, not revenue. What changed instead is the wording: with no supported cause the summary says those segments "stand out by share" and "may not be a real concentration" rather than "the change is concentrated in".
+- `baseline_trend` grades by size alone, so an ordinary month can read as a move: on the `flat` scenario revenue against baseline ranged from -2.7% to +24.7% across draws with nothing injected. It still leads nowhere, because no cause test supports anything, but the headline figure alone is not evidence of a change.
+- A single-region channel loss barely moves total revenue. On `channel_loss` the median change against baseline was -3.7% (range -13.9% to +0.4%) while West itself fell about half, and the cause was found in every draw. That is the argument for testing segments instead of watching the total.
+- Cause tests compare a region or category with the typical one, so they cannot separate a change hitting half or more of the regions from a general one. The validator warns at fewer than 3 regions; it cannot know how many regions a real change touched.
+- Uploads are limited to 500,000 orders, refunds (negative revenue) are excluded rather than modelled, and date strings are read by pandas' inference, so use YYYY-MM-DD.

@@ -185,7 +185,16 @@ def build_summary(evidence) -> str:
         parts.append(_split_sentence("Overall (vs. the prior month)", *overall))
     if conc:
         names = ", ".join(label(e) for e in conc)
-        parts.append(f"The change is concentrated in {names}.")
+        if causes:
+            parts.append(f"The change is concentrated in {names}.")
+        else:
+            # Revenue share of the change is noisy at segment level, and with no
+            # supported cause there is nothing else to corroborate it.
+            parts.append(
+                f"By share of the revenue change, {names} stand out, but revenue by segment "
+                f"varies a lot from month to month and no tested explanation is supported, so "
+                f"this may not be a real concentration."
+            )
     if causes:
         bullets = "\n".join(f"- {e.hypothesis} ({e.strength} evidence)" for e in causes)
         parts.append("Explanations the data supports:\n" + bullets)

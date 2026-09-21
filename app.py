@@ -23,7 +23,7 @@ import streamlit.components.v1 as components
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from charts import STRENGTH_COLOR, driver_figure, metric_figure  # noqa: E402
-from data_loader import load_data  # noqa: E402
+from data_loader import load_data, scenario_dir  # noqa: E402
 from decision_log import DecisionLog, record_from_decision  # noqa: E402
 from decisions import build_options  # noqa: E402
 from decomposition import signature_check  # noqa: E402
@@ -31,6 +31,8 @@ from followup import MAX_QUESTION_CHARS, answer_question  # noqa: E402
 from narration import label, metric_note  # noqa: E402
 from orchestrator import investigate, make_client  # noqa: E402
 from report import build_report  # noqa: E402
+from synthetic import SCENARIOS  # noqa: E402
+from validation import TABLES, load_upload  # noqa: E402
 from scenario import (  # noqa: E402
     DEFAULT_HORIZON_MONTHS, DEFAULT_LAG_MONTHS, DEFAULT_RECOVERY_SHARE, DEFAULT_TEST_SHARE,
     Assumptions, run_scenario,
@@ -63,8 +65,18 @@ st.markdown(
 # ----------------------------------------------------------------- state ---
 
 @st.cache_resource
-def get_data():
-    return load_data()
+def get_scenario_data(name):
+    return load_data(scenario_dir(name))
+
+
+def active_dataset():
+    """The dataset every screen works on: a demo scenario or a validated upload."""
+    ds = st.session_state.get("dataset")
+    if ds is None:
+        orders, marketing = get_scenario_data("default")
+        ds = {"kind": "scenario", "name": "default", "label": SCENARIOS["default"].title,
+              "orders": orders, "marketing": marketing}
+    return ds
 
 
 def init_state():
@@ -72,6 +84,7 @@ def init_state():
         "screen": "command", "pending": None, "inv": None, "decisions": None,
         "chosen": None, "note": "", "question": DEFAULT_QUESTION,
         "followups": [], "pending_followup": None, "saved_record": None, "trend_cache": {},
+        "dataset": None, "upload_result": None, "data_source": "Demo scenario",
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -94,6 +107,39 @@ def scroll_to_top():
         "if (m) m.scrollTo({top: 0});</script>",
         height=0,
     )
+
+
+def reset_investigation():
+    """Forget everything derived from the previous dataset or question."""
+    st.session_state.pending = None
+    st.session_state.inv = None
+    st.session_state.decisions = None
+    st.session_state.chosen = None
+    st.session_state.note = ""
+    st.session_state.followups = []
+    st.session_state.pending_followup = None
+    st.session_state.saved_record = None
+    st.session_state.trend_cache = {}
+
+
+def use_scenario():
+    name = st.session_state.scenario_choice
+    orders, marketing = get_scenario_data(name)
+    st.session_state.dataset = {"kind": "scenario", "name": name, "label": SCENARIOS[name].title,
+                                "orders": orders, "marketing": marketing}
+    st.session_state.upload_result = None
+    reset_investigation()
+
+
+def apply_upload():
+    sources = {t: st.session_state.get(f"upload_{t}") for t in TABLES}
+    result = load_upload(sources, drop_partial_last_month=st.session_state.get("upload_trim", False))
+    st.session_state.upload_result = result
+    if result.ok:
+        orders, marketing = result.data
+        st.session_state.dataset = {"kind": "upload", "name": "upload", "label": "Your uploaded data",
+                                    "orders": orders, "marketing": marketing}
+        reset_investigation()
 
 
 def start_investigation():
@@ -268,6 +314,7 @@ def sidebar(client):
     with st.sidebar:
         st.markdown("### KyuYaar")
         st.caption("AI that investigates before it recommends.")
+        st.caption(f"Data: {active_dataset()['label']}")
         st.divider()
         options = ["Offline (scripted plan)"]
         if client is not None:
@@ -311,9 +358,54 @@ def nav(suffix=""):
     st.divider()
 
 
+def data_picker():
+    ds = active_dataset()
+    with st.expander(f"Data: {ds['label']}", expanded=False):
+        source = st.radio("Data source", ["Demo scenario", "Upload your own CSVs"], key="data_source", horizontal=True)
+        if source == "Demo scenario":
+            names = list(SCENARIOS)
+            current = ds["name"] if ds["kind"] == "scenario" else "default"
+            st.selectbox(
+                "Scenario", names, index=names.index(current), key="scenario_choice",
+                format_func=lambda n: SCENARIOS[n].title, on_change=use_scenario,
+            )
+            sc = SCENARIOS[st.session_state.get("scenario_choice", current)]
+            st.caption(sc.description)
+            st.caption(
+                "These are generated datasets with a known answer, so the investigation can be checked "
+                "against what was injected. Scenarios with no injected cause should end in "
+                "\"the data does not support a cause\"."
+            )
+        else:
+            st.caption(
+                "Upload all four tables as CSV. Required columns: **orders** order_date, customer_id, "
+                "product_id, quantity, revenue, channel · **products** product_id, category, cost · "
+                "**customers** customer_id, region · **marketing** date, channel, region, spend. "
+                "Nothing is changed silently: unusable rows are counted and reported."
+            )
+            cols = st.columns(4)
+            for col, table in zip(cols, TABLES):
+                col.file_uploader(f"{table}.csv", type=["csv"], key=f"upload_{table}")
+            st.checkbox("Leave out the latest month if it is incomplete", key="upload_trim")
+            st.button("Validate and use this data", on_click=apply_upload)
+            result = st.session_state.upload_result
+            if result is not None:
+                for msg in result.errors:
+                    st.error(msg)
+                for msg in result.warnings:
+                    st.warning(msg)
+                if result.ok:
+                    sm = result.summary
+                    st.success(
+                        f"Using your data: {sm['orders']:,} orders over {sm['months']} months "
+                        f"({sm['first_order']} to {sm['last_order']})."
+                    )
+
+
 def screen_command(orders):
     st.title("KyuYaar")
     st.markdown("A small-business investigator: it checks the numbers, tests the likely causes, and hands you options instead of a guess.")
+    data_picker()
 
     series = monthly_revenue(orders)
     latest, earlier = float(series.iloc[-1]), float(series.iloc[:-1].mean())
@@ -675,7 +767,8 @@ def screen_decision(orders):
 
 def main():
     init_state()
-    orders, marketing = get_data()
+    ds = active_dataset()
+    orders, marketing = ds["orders"], ds["marketing"]
     toolkit = Toolkit(orders, marketing)
     client = make_client()
     sidebar(client)
