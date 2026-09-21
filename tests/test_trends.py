@@ -9,7 +9,7 @@ from trends import baseline_index, driver_trend, metric_by_group
 
 @pytest.fixture(scope="module")
 def evidence(toolkit):
-    events = list(investigate("q", toolkit))
+    events = list(investigate("Revenue dropped. Why?", toolkit))
     return {e.id: e for e in events[-1].data["investigation"].evidence}
 
 

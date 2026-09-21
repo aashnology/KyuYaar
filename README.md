@@ -19,16 +19,27 @@ question -> orchestrator -> tools -> Evidence objects -> guardrail -> UI -> deci
               (LLM)        (pandas)   (strength, caveats)  (number check)     (templates)
 ```
 
+0. **`question.py`** first checks the question against the one supported investigation type (why revenue or orders changed). Anything else ("how many customers do we have?", a forecast, profit) is declined with a reason and an example, before any tool or model call.
 1. **`baseline_trend`** confirms the metric actually moved.
 2. **`aov_volume_decomposition`** splits a revenue change into fewer orders vs. smaller orders, overall and per segment.
 3. **`segment_breakdown`** shows where the change is concentrated (region, category).
 4. **`marketing_effect` / `price_effect`** test each candidate cause against a control group of segments whose driver didn't move.
 5. **`marketing_channel_analysis`** repeats the marketing test per paid channel, and checks whether a loss is channel-specific or region-wide.
 6. The **orchestrator** (LLM) chooses which tool to call next and writes short readouts; every figure it states is checked against the evidence (`src/guardrail.py`) and discarded/replaced if unsupported.
-7. **`decisions.py`** maps supported causes to option templates — each with assumptions, risks, and an impact estimate. Nothing is ranked or chosen for you.
+7. **`decisions.py`** maps supported (strong or moderate) causes to option templates — each with one or more assumptions, one or more risks, and an impact estimate. Weak evidence gets no option. Nothing is ranked or chosen for you.
 8. **`run_scenario()`** projects what a chosen option is worth under assumptions you set — plain arithmetic over the evidence, shown step by step, no model involved.
 
-Full methodology detail (the exact statistical tests, strength thresholds, and validation rules) lives in the module docstrings under `src/`.
+### What "strong", "moderate" and "weak" mean
+
+Each tool grades its own evidence with one of three labels, defined once in `src/strength.py` (`strong` is the original brief's High, `moderate` is Medium, `weak` is Low). Only strong and moderate evidence can support an option. Strength is how clearly the data supports a finding, not how important it is and not proof of cause.
+
+It is graded on effect size, statistical certainty against a comparison group, and sample size — not a percentage threshold. A size-only rule ("over 15% is High") can't separate a cause from background movement here: in the final month every region fell 17.6–43.6% and four of five categories fell over 15%. The rule used instead singles out North (marketing) and Electronics (price) and leaves the other regions and categories weak.
+
+- [`docs/EVIDENCE_STRENGTH.md`](docs/EVIDENCE_STRENGTH.md): the thresholds per tool, the rules shared by all of them, and how they are tested.
+- [`docs/ORCHESTRATOR_SPEC.md`](docs/ORCHESTRATOR_SPEC.md): the orchestrator's rules as built, and where they differ from the original brief.
+- Anything built on the label reads it through `src/strength.py`; `is_actionable()` raises on an unknown label, and a test fails if another module keeps its own copy of the scale.
+
+The statistical methods themselves are described in the module docstrings under `src/`.
 
 ## Status
 
@@ -41,6 +52,7 @@ Full methodology detail (the exact statistical tests, strength thresholds, and v
 | 5 | `run_scenario()`: what each option is worth under stated assumptions, arithmetic shown step by step | done |
 | 6 | Follow-up Q&A over the evidence, trend charts, downloadable report, decision log data structure | done; outcome-tracking loop documented as future work |
 | 7 | Three more ground-truth scenarios (channel-only loss, unexplained demand fall, flat month) checked over many random draws; upload your own four CSVs with validation | done |
+| — | Hardening before recommendation logic: one strength scale, the strength rule documented, end-to-end determinism proof, off-script questions declined | done |
 
 ## Run it
 

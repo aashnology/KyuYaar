@@ -54,7 +54,7 @@ from evidence import Evidence, _downgrade_if_small_sample
 # Earlier month-on-month changes needed before "normal variation" means anything.
 MIN_HISTORY = 6
 
-_STRENGTH_ORDER = {"strong": 0, "moderate": 1, "weak": 2}
+from strength import RANK as _STRENGTH_ORDER
 
 _NOT_A_CAUSE = "this describes how revenue changed, not why it changed"
 _MIX_CAVEAT = (

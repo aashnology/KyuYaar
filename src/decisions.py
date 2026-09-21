@@ -16,7 +16,7 @@ from channels import channel_check
 from decomposition import signature_check
 from narration import label
 
-_ACTIONABLE = ("strong", "moderate")
+from strength import is_actionable, weakest
 
 
 @dataclass
@@ -50,8 +50,7 @@ def _name(ev):
 
 
 def _weakest(evs):
-    order = {"weak": 0, "moderate": 1, "strong": 2}
-    return min((e.strength for e in evs), key=lambda s: order[s]) if evs else "n/a"
+    return weakest(e.strength for e in evs)
 
 
 def _marketing_options(ev, evidence):
@@ -201,7 +200,7 @@ def _price_options(ev, evidence):
 def build_options(evidence) -> DecisionSet:
     causes = [
         e for e in evidence
-        if e.evidence_type == "statistical" and e.strength in _ACTIONABLE
+        if e.evidence_type == "statistical" and is_actionable(e)
     ]
     causes.sort(key=lambda e: -(e.details.get("revenue_at_stake") or 0))
 

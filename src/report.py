@@ -1,6 +1,7 @@
 """Markdown decision memo built from a finished investigation."""
 
 from narration import label
+from strength import RANK
 
 
 def _fmt(x):
@@ -18,7 +19,7 @@ def build_report(inv, decision_set, chosen_id=None, note="", scenarios=None, fol
         "| Strength | Type | Finding | Sample | Source |",
         "|---|---|---|---|---|",
     ]
-    order = {"strong": 0, "moderate": 1, "weak": 2}
+    order = RANK
     for ev in sorted(inv.evidence, key=lambda e: (order[e.strength], e.evidence_type)):
         prov = ev.details.get("provenance", {})
         src = f"`{prov.get('tool', '?')}` in {prov.get('source', '?')}"

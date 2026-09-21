@@ -8,7 +8,7 @@ from report import build_report
 
 @pytest.fixture(scope="module")
 def inv(toolkit):
-    return [e for e in investigate("why", toolkit) if e.kind == "done"][0].data["investigation"]
+    return [e for e in investigate("Revenue dropped. Why?", toolkit) if e.kind == "done"][0].data["investigation"]
 
 
 def test_supported_causes_map_to_options(inv):

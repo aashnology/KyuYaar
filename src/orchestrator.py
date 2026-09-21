@@ -21,6 +21,7 @@ from evidence import Evidence
 from guardrail import check_text
 from llm import LLMError, ToolResult, as_adapter, make_client  # noqa: F401  (make_client re-exported)
 from narration import build_summary, narrate_step
+from question import classify_question
 from toolkit import Toolkit, ToolError, evidence_to_payload
 
 MAX_TURNS = 10
@@ -59,6 +60,9 @@ marketing_channel_analysis shows which channel's spend moved and whether the ord
 concentrated in that channel or shared by the region's other channels.
 
 Rules:
+- Strength labels (strong, moderate, weak) are assigned by the tools using fixed rules. Report each \
+one exactly as returned; never assign, upgrade or soften a label from your own sense of how convincing \
+a story is.
 - Quote figures exactly as the tool results give them. Do not introduce any other numerals: no \
 sums, averages, ratios or recalculated percentages. If a figure is not in a tool result, do not state it.
 - Work in rounds and keep the number of turns small: round 1 is baseline_trend and the overall \
@@ -84,7 +88,7 @@ QUESTION_TEMPLATE = (
 
 @dataclass
 class Event:
-    kind: str          # start | plan | tool_call | evidence | narration | guardrail | coverage | note | summary | done
+    kind: str          # start | unsupported | plan | tool_call | evidence | narration | guardrail | coverage | note | summary | done
     data: dict = field(default_factory=dict)
 
 
@@ -100,6 +104,7 @@ class Investigation:
     summary_source: str                    # "llm" | "template"
     guardrail_blocks: list[dict]
     notes: list[str]
+    unsupported: str | None = None         # reason, when the question is not a supported type
 
 
 class _State:
@@ -246,6 +251,19 @@ def investigate(question, toolkit: Toolkit, client=None, model=None,
                 max_turns=MAX_TURNS) -> Iterator[Event]:
     """Run an investigation, yielding events as it goes. The last event is
     'done' and carries the finished Investigation."""
+    check = classify_question(question)
+    if not check.supported:
+        # Decline before any tool runs or any model call is made.
+        yield Event("start", {"question": question, "mode": "declined", "model": None,
+                              "provider": None, "display": None})
+        yield Event("unsupported", {"reason": check.reason})
+        yield Event("done", {"investigation": Investigation(
+            question=question, mode="declined", model=None, provider=None, evidence=[],
+            steps=[], summary=check.reason, summary_source="template",
+            guardrail_blocks=[], notes=[], unsupported=check.reason,
+        )})
+        return
+
     adapter = as_adapter(client, model)
     live = adapter is not None
     state = _State(question, "live" if live else "offline", adapter.model if live else None)

@@ -74,6 +74,9 @@ On the synthetic dataset (45% cut to paid marketing in North, 10% price rise on 
 - **Layer 4:** North/Paid is the only supported channel cell (spend -44.9% vs. -1.7% typical; Paid orders -33.9%, p=0.013, n=71). The loss is region-wide, not Paid-specific (North's other channels fell 40.3%, close to Paid, difference p=0.610) — matching how the data was generated. Cost per Paid order barely moved (196.08 → 191.90, p=0.885): less was bought, it didn't perform worse. Over ten earlier months, 0/120 cells flagged.
 - **Layer 5:** engine projections for North and Electronics match an independent recomputation from raw CSVs. For Electronics, projected gross profit is exactly zero at its break-even share.
 - **Layer 6:** all 10 offline answers to a question battery pass the guardrail and cite only real evidence. Chart series match the findings they illustrate exactly (checked in `verify_layer6.py`).
+- **Determinism:** the same question on the same data gives identical evidence, plan and decision options on every scenario, across Python hash seeds, and under different live-model wording and tool order. Only narration wording may vary (`tests/test_determinism.py`).
+- **Strength scale:** every tool on every scenario emits only the three labels, no decision option is built on weak evidence, and no module keeps its own copy of the actionable threshold (`tests/test_strength.py`, rule in `docs/EVIDENCE_STRENGTH.md`).
+- **Off-script questions:** a customer count, a forecast or a profit question is declined with a reason before any tool or model call (`tests/test_question.py`).
 
 ## Known limits (full detail)
 

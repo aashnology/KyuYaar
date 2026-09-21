@@ -211,7 +211,7 @@ def test_full_investigation_through_the_gemini_adapter(toolkit):
         reply({"text": "Revenue is down 23.9%. North and Electronics carry the change."}),
     ]
     a, transport = adapter(responses)
-    events = list(investigate("why", toolkit, client=a))
+    events = list(investigate("Revenue dropped. Why?", toolkit, client=a))
     inv = events[-1].data["investigation"]
     assert inv.mode == "live" and inv.provider == "gemini" and inv.model == "gemini-test"
     assert [s["tool"] for s in inv.steps] == [t for t, _ in STANDARD_PLAN]
@@ -225,7 +225,7 @@ def test_quota_failure_mid_run_falls_back_to_offline(toolkit):
         LLMError("HTTP 429: quota exceeded", status=429), LLMError("HTTP 429", status=429), LLMError("HTTP 429", status=429),
     ]
     a, _ = adapter(responses, retry_delays=(1, 2))
-    events = list(investigate("why", toolkit, client=a))
+    events = list(investigate("Revenue dropped. Why?", toolkit, client=a))
     inv = events[-1].data["investigation"]
     assert any("429" in n for n in inv.notes)
     assert [s["tool"] for s in inv.steps] == [t for t, _ in STANDARD_PLAN]
@@ -241,7 +241,7 @@ def test_guardrail_applies_to_gemini_prose_too(toolkit):
         reply({"text": "Fine."}),
     ]
     a, _ = adapter(responses)
-    inv = list(investigate("why", toolkit, client=a))[-1].data["investigation"]
+    inv = list(investigate("Revenue dropped. Why?", toolkit, client=a))[-1].data["investigation"]
     assert inv.guardrail_blocks and "62" in inv.guardrail_blocks[0]["unsupported"]
 
 
@@ -281,7 +281,7 @@ def test_parallel_tool_calls_are_answered_together_in_one_message(toolkit):
         reply({"text": "Done."}),
     ]
     a, transport = adapter(responses)
-    list(investigate("why", toolkit, client=a))
+    list(investigate("Revenue dropped. Why?", toolkit, client=a))
     second_request = transport.calls[1]["payload"]["contents"]
     reply_to_calls = second_request[2]
     assert reply_to_calls["role"] == "user"
@@ -308,9 +308,14 @@ def test_steps_the_model_did_not_comment_on_still_get_a_readout(toolkit):
         reply({"text": "Revenue is down 23.9%. North and Electronics carry the change."}),
     ]
     a, _ = adapter(responses)
-    events = list(investigate("why", toolkit, client=a))
+    events = list(investigate("Revenue dropped. Why?", toolkit, client=a))
     inv = events[-1].data["investigation"]
     assert not any(e.kind == "coverage" for e in events)          # the model ran everything itself
     assert inv.summary_source == "llm"
     assert all(s["narration"] for s in inv.steps)                 # no bare steps
     assert all(s["narration_source"] == "template" for s in inv.steps)
+
+
+def test_the_prompt_says_strength_labels_come_from_the_tools():
+    from orchestrator import SYSTEM_PROMPT
+    assert "assigned by the tools" in SYSTEM_PROMPT and "never assign, upgrade or soften" in SYSTEM_PROMPT

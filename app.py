@@ -30,7 +30,9 @@ from decomposition import signature_check  # noqa: E402
 from followup import MAX_QUESTION_CHARS, answer_question  # noqa: E402
 from narration import label, metric_note  # noqa: E402
 from orchestrator import investigate, make_client  # noqa: E402
+from question import classify_question  # noqa: E402
 from report import build_report  # noqa: E402
+from strength import RANK  # noqa: E402
 from synthetic import SCENARIOS  # noqa: E402
 from validation import TABLES, load_upload  # noqa: E402
 from scenario import (  # noqa: E402
@@ -85,6 +87,7 @@ def init_state():
         "chosen": None, "note": "", "question": DEFAULT_QUESTION,
         "followups": [], "pending_followup": None, "saved_record": None, "trend_cache": {},
         "dataset": None, "upload_result": None, "data_source": "Demo scenario",
+        "question_error": None,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -143,6 +146,13 @@ def apply_upload():
 
 
 def start_investigation():
+    check = classify_question(st.session_state.question)
+    if not check.supported:
+        # Stay on the command center and say why, instead of running an
+        # investigation that does not fit the question.
+        st.session_state.question_error = check.reason
+        return
+    st.session_state.question_error = None
     st.session_state.pending = st.session_state.question
     st.session_state.inv = None
     st.session_state.decisions = None
@@ -422,6 +432,8 @@ def screen_command(orders):
     st.text_area("Business question", key="question", height=90, label_visibility="collapsed")
     st.caption("This version runs one kind of investigation: why a revenue change happened, using order, product, customer and marketing data.")
     st.button("Investigate →", type="primary", on_click=start_investigation)
+    if st.session_state.get("question_error"):
+        st.warning(st.session_state.question_error)
 
 
 def screen_progress(toolkit, client, nav_slot):
@@ -557,7 +569,7 @@ def screen_evidence(orders, marketing, client=None):
         ("Candidate causes tested", "statistical"),
         ("Marketing by channel", "channel"),
     ]
-    order = {"strong": 0, "moderate": 1, "weak": 2}
+    order = RANK
     for title, etype in groups:
         items = sorted(
             [e for e in inv.evidence if e.evidence_type == etype],

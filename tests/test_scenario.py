@@ -254,7 +254,7 @@ def test_invalid_assumptions_are_rejected(kwargs):
 
 @pytest.fixture(scope="module")
 def inv(toolkit):
-    return [e for e in investigate("why", toolkit) if e.kind == "done"][0].data["investigation"]
+    return [e for e in investigate("Revenue dropped. Why?", toolkit) if e.kind == "done"][0].data["investigation"]
 
 
 @pytest.fixture(scope="module")

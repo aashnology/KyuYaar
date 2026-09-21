@@ -31,11 +31,11 @@ from toolkit import evidence_to_payload
 
 MAX_QUESTION_CHARS = 600
 MAX_FINDINGS = 4
-_STRENGTH_ORDER = {"strong": 0, "moderate": 1, "weak": 2}
+from strength import RANK as _STRENGTH_ORDER
 # Within a strength level, the finding that speaks most directly to the question comes first.
 _TYPE_ORDER = {"observation": 0, "statistical": 1, "association": 2, "decomposition": 3, "channel": 4}
 _OVERALL_TOPICS = {"aov", "orders", "trend"}
-_STRENGTH_WORD = {"strong": "Strong", "moderate": "Moderate", "weak": "Weak"}
+from strength import WORD as _STRENGTH_WORD
 
 FOLLOWUP_SYSTEM = """You answer follow-up questions about one finished investigation inside \
 KyuYaar. You are given the complete evidence from that investigation as JSON. You have no tools \

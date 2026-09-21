@@ -8,7 +8,7 @@ the Evidence objects, so the numbers in it are correct by construction.
 
 from decomposition import signature_check
 
-_STRENGTH_WORD = {"strong": "Strong", "moderate": "Moderate", "weak": "Weak"}
+from strength import WORD as _STRENGTH_WORD, is_actionable
 
 
 def label(ev) -> str:
@@ -68,7 +68,7 @@ def _split_sentence(name, orders, aov):
 
 
 def _notable(evidence):
-    return [e for e in evidence if e.strength in ("strong", "moderate")]
+    return [e for e in evidence if is_actionable(e)]
 
 
 def _first_caveat(ev):

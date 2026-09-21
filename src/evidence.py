@@ -19,7 +19,9 @@ MIN_SAMPLE_SIZE = 30
 # Below this total change, "share of the change" is dividing by something close
 # to zero and the ranking is noise. Same bar baseline_trend uses for "moderate".
 MIN_TOTAL_CHANGE_PCT = 10.0
-_STRENGTH_ORDER = ["weak", "moderate", "strong"]
+from strength import STRENGTH_ORDER
+
+_STRENGTH_ORDER = list(STRENGTH_ORDER)
 
 
 @dataclass
