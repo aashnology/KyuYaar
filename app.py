@@ -31,6 +31,7 @@ from followup import MAX_QUESTION_CHARS, answer_question  # noqa: E402
 from narration import label, metric_note  # noqa: E402
 from orchestrator import investigate, make_client  # noqa: E402
 from question import classify_question  # noqa: E402
+from recommend import recommend  # noqa: E402
 from report import build_report  # noqa: E402
 from strength import RANK  # noqa: E402
 from synthetic import SCENARIOS  # noqa: E402
@@ -708,6 +709,8 @@ def screen_decision(orders):
     else:
         time_frame_controls()
 
+    banner_slot = st.empty()   # filled after the loop, once every scenario is known
+
     scenarios = {}
     for opt in decision_set.options:
         chosen = st.session_state.chosen == opt.id
@@ -732,6 +735,15 @@ def screen_decision(orders):
                 st.button("Choose this option", key=f"choose_{opt.id}",
                           on_click=choose, args=(opt.id,))
 
+    rec = None
+    if not decision_set.insufficient:
+        rec = recommend(decision_set, inv.evidence, scenarios)
+        with banner_slot.container():
+            (st.success if rec.has_pick else st.info)(rec.sentence)
+            for note in rec.notes:
+                st.caption(note)
+            st.caption(rec.closing)
+
     if decision_set.not_supported:
         with st.expander("Tested and not supported by the data"):
             for x in decision_set.not_supported:
@@ -744,7 +756,7 @@ def screen_decision(orders):
     st.text_area("Note for the record (optional)", key="note", height=80)
     st.session_state["_scenarios"] = scenarios      # read by save_decision()
     memo = build_report(inv, decision_set, st.session_state.chosen, st.session_state.note,
-                        scenarios, st.session_state.followups)
+                        scenarios, st.session_state.followups, rec)
     chosen = st.session_state.chosen
     left, right = st.columns(2)
     left.download_button(

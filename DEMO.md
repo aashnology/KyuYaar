@@ -40,6 +40,17 @@ Revenue is orders x average order value (AOV), so a drop is fewer orders, smalle
 - **Break-even share**: the share of the revenue at stake that must return for gross profit to be unchanged. Above 100% means the option can't pay for itself within the horizon.
 - On the default dataset: restoring North's spend is marginal on gross profit (full restoration costs ~11,000/month against ~12,700 of gross profit at stake — break-even share 130% over 3 months, 104% over 6, 95% over 12, 91% over 24). The Electronics price rollback breaks even at 55.5% of revenue at stake won back.
 
+## Layer 8: which option, if any, gets recommended
+
+`recommend()` reads the options `decisions.py` already built and the projections `run_scenario()` already ran, and adds one annotation: at most one option marked "Recommended." It computes nothing new.
+
+- **Evidence gate first.** Only options resting entirely on strong/moderate evidence are eligible. On the default dataset under the placeholder assumptions, every real option projects a gross-profit *loss* (see above), so the correct answer is "none recommended, evidence doesn't force one" — not a forced pick. Under a more generous read (100% of the revenue at stake won back, over 12 months, no lag), rolling back Electronics' price is recommended: it clears the evidence bar, and its projected gross profit (+49,723, adjusted to +24,862 for the risk of a full-commitment "act" option) beats restoring North's spend (+19,975 raw, +9,987 adjusted) even though North's raw projection isn't far behind.
+- **Ranking is on risk-adjusted gross profit, not revenue.** Revenue recovered is shown alongside it, but ranking on revenue would recommend spending money to lose money whenever an option wins back orders at a cost that exceeds the margin on them — which restoring marketing spend often does on this dataset.
+- **Risk points**, capped at two, before the projected impact is halved (2 pts), cut by a quarter (1 pt), or left alone (0 pts): a full-commitment "act" option (not a bounded "test"), a gross-profit interval that reaches zero/below or has no interval at all, and any risks beyond the usual two the option states.
+- **`channel_loss`** never gets a recommendation, at either assumption setting tried: restoring West's cut Paid spend costs more than the gross profit it wins back even at 100% recovery over 12 months (break-even share above 100%, matching the Layer 5 write-up above) — `recommend()` correctly reports "no gain," not a pick.
+- **`demand_shock` and `flat`** never get a recommendation either, at any assumption setting — there's no supported cause to rank in the first place, so the result is "insufficient data," the same answer the evidence stage already gives.
+- Checked with `pytest tests/test_recommend.py` (constructed cases for the evidence gate, the risk-adjusted ranking, and single-pick invariants, plus the real investigation on all four scenarios) and `scripts/verify_layer8.py` (prints the same sweep for eyeballing).
+
 ## Asking about the findings
 
 The evidence screen has a question box (`answer_question()` in `src/followup.py`) — answers only from evidence already produced, no new computation.

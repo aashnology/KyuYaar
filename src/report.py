@@ -8,7 +8,8 @@ def _fmt(x):
     return "-" if x is None else (f"{x:,.1f}" if isinstance(x, float) else str(x))
 
 
-def build_report(inv, decision_set, chosen_id=None, note="", scenarios=None, followups=None) -> str:
+def build_report(inv, decision_set, chosen_id=None, note="", scenarios=None, followups=None,
+                  recommendation=None) -> str:
     scenarios = scenarios or {}
     chosen_here = any(o.id == chosen_id for o in decision_set.options)
     lines = [
@@ -64,6 +65,13 @@ def build_report(inv, decision_set, chosen_id=None, note="", scenarios=None, fol
     if decision_set.not_supported:
         lines += ["## Tested and not supported", ""] + [f"- {x}" for x in decision_set.not_supported] + [""]
     lines += ["## Still unresolved", ""] + [f"- {x}" for x in decision_set.unresolved] + [""]
+
+    if recommendation is not None:
+        lines += ["## Recommendation", "", recommendation.sentence, ""]
+        lines += [f"- {x}" for x in recommendation.notes]
+        if recommendation.notes:
+            lines.append("")
+        lines += [recommendation.closing, ""]
 
     lines += ["## Decision", ""]
     chosen = next((o for o in decision_set.options if o.id == chosen_id), None)

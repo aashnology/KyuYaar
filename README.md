@@ -26,8 +26,9 @@ question -> orchestrator -> tools -> Evidence objects -> guardrail -> UI -> deci
 4. **`marketing_effect` / `price_effect`** test each candidate cause against a control group of segments whose driver didn't move.
 5. **`marketing_channel_analysis`** repeats the marketing test per paid channel, and checks whether a loss is channel-specific or region-wide.
 6. The **orchestrator** (LLM) chooses which tool to call next and writes short readouts; every figure it states is checked against the evidence (`src/guardrail.py`) and discarded/replaced if unsupported.
-7. **`decisions.py`** maps supported (strong or moderate) causes to option templates — each with one or more assumptions, one or more risks, and an impact estimate. Weak evidence gets no option. Nothing is ranked or chosen for you.
+7. **`decisions.py`** maps supported (strong or moderate) causes to option templates — each with one or more assumptions, one or more risks, and an impact estimate. Weak evidence gets no option. `decisions.py` itself does not rank or choose between them; step 9 below does that as a separate annotation.
 8. **`run_scenario()`** projects what a chosen option is worth under assumptions you set — plain arithmetic over the evidence, shown step by step, no model involved.
+9. **`recommend()`** ranks the options that passed step 7 by their projected gross profit from step 8, adjusted for risk, and marks one "Recommended" — or none, if no option clears the evidence bar or none projects a gain. It ranks and annotates; it never changes an option's evidence, assumptions or risks.
 
 ### What "strong", "moderate" and "weak" mean
 
@@ -53,6 +54,7 @@ The statistical methods themselves are described in the module docstrings under 
 | 6 | Follow-up Q&A over the evidence, trend charts, downloadable report, decision log data structure | done; outcome-tracking loop documented as future work |
 | 7 | Three more ground-truth scenarios (channel-only loss, unexplained demand fall, flat month) checked over many random draws; upload your own four CSVs with validation | done |
 | — | Hardening before recommendation logic: one strength scale, the strength rule documented, end-to-end determinism proof, off-script questions declined | done |
+| 8 | `recommend()`: ranks the actionable options by projected gross profit adjusted for risk, marks one "Recommended" (or none, if the evidence or the projections don't support it) | done |
 
 ## Run it
 
