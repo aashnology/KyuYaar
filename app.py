@@ -30,6 +30,7 @@ from decomposition import signature_check  # noqa: E402
 from followup import MAX_QUESTION_CHARS, answer_question  # noqa: E402
 from narration import label, metric_note  # noqa: E402
 from orchestrator import investigate, make_client  # noqa: E402
+from palette import DEFAULT_PALETTE, PALETTES  # noqa: E402
 from question import classify_question  # noqa: E402
 from recommend import recommend  # noqa: E402
 from report import build_report  # noqa: E402
@@ -47,6 +48,22 @@ DEFAULT_QUESTION = "Revenue dropped last month. Why did it happen, and what shou
 SCREENS = [("command", "1 · Command center"), ("progress", "2 · Investigation"),
            ("evidence", "3 · Evidence"), ("decision", "4 · Decision")]
 KIND_LABEL = {"act": "Act", "test": "Test first", "hold": "Hold"}
+
+# Plain-language heading for each investigation step, for readers who don't
+# read tool calls. Keyed on (tool, dimension) where a tool takes a
+# `dimension` argument, on the tool name alone otherwise. The underlying
+# `tool(args)` call is still shown, just de-emphasized (see _call_text).
+STEP_LABELS = {
+    "baseline_trend": "Checking whether revenue actually changed",
+    ("aov_volume_decomposition", None): "Splitting the change into fewer orders vs. smaller orders",
+    ("aov_volume_decomposition", "region"): "Checking which region's orders or order size moved",
+    ("aov_volume_decomposition", "category"): "Checking which category's orders or order size moved",
+    ("segment_breakdown", "region"): "Checking which region the change is concentrated in",
+    ("segment_breakdown", "category"): "Checking which category the change is concentrated in",
+    "marketing_effect": "Testing whether marketing spend explains it",
+    "marketing_channel_analysis": "Checking which marketing channel is behind it",
+    "price_effect": "Testing whether a price change explains it",
+}
 
 st.set_page_config(page_title="KyuYaar", page_icon="🔎", layout="wide")
 
@@ -88,7 +105,7 @@ def init_state():
         "chosen": None, "note": "", "question": DEFAULT_QUESTION,
         "followups": [], "pending_followup": None, "saved_record": None, "trend_cache": {},
         "dataset": None, "upload_result": None, "data_source": "Demo scenario",
-        "question_error": None,
+        "question_error": None, "data_chosen": False,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -132,6 +149,7 @@ def use_scenario():
     st.session_state.dataset = {"kind": "scenario", "name": name, "label": SCENARIOS[name].title,
                                 "orders": orders, "marketing": marketing}
     st.session_state.upload_result = None
+    st.session_state.data_chosen = True
     reset_investigation()
 
 
@@ -143,6 +161,7 @@ def apply_upload():
         orders, marketing = result.data
         st.session_state.dataset = {"kind": "upload", "name": "upload", "label": "Your uploaded data",
                                     "orders": orders, "marketing": marketing}
+        st.session_state.data_chosen = True
         reset_investigation()
 
 
@@ -185,16 +204,42 @@ def _call_text(tool, args):
     return f"`{tool}({_fmt_args(args)})`"
 
 
+def step_label(tool, args):
+    """Plain-English heading for one investigation step. Falls back to the
+    tool name for anything not in STEP_LABELS."""
+    if tool in ("aov_volume_decomposition", "segment_breakdown"):
+        return STEP_LABELS.get((tool, args.get("dimension")), tool)
+    return STEP_LABELS.get(tool, tool)
+
+
+def active_palette():
+    """The colour preset the person picked in the sidebar, or the default
+    before that widget has run once."""
+    return st.session_state.get("palette_name", DEFAULT_PALETTE)
+
+
 def monthly_revenue(orders):
     series = orders.set_index("order_date")["revenue"].resample("ME").sum()
     series.index = series.index.to_period("M").astype(str)
     return series
 
 
-def revenue_chart(orders):
+def revenue_chart(orders, palette=None):
+    pal = PALETTES.get(palette, PALETTES[DEFAULT_PALETTE])
     series = monthly_revenue(orders)
-    colors = ["#9ca3af"] * (len(series) - 1) + ["#dc2626"]
-    fig = go.Figure(go.Bar(x=series.index, y=series.values, marker_color=colors))
+    n = len(series)
+    colors = [pal["comparison"]] * (n - 1) + [pal["latest"]]
+    customdata = []
+    for i, val in enumerate(series.values):
+        if i == 0:
+            pct_text = "n/a"
+        else:
+            pct_text = f"{(val / series.values[i - 1] - 1) * 100:+.1f}%"
+        customdata.append([pct_text, " (latest month)" if i == n - 1 else ""])
+    fig = go.Figure(go.Bar(
+        x=series.index, y=series.values, marker_color=colors, customdata=customdata,
+        hovertemplate="%{x}%{customdata[1]}: %{y:,.0f}<br>vs. prior month: %{customdata[0]}<extra></extra>",
+    ))
     fig.update_layout(
         height=300, margin=dict(l=10, r=10, t=30, b=10),
         title="Monthly revenue", yaxis_title=None, xaxis_title=None,
@@ -272,7 +317,8 @@ def evidence_card(ev, pattern=None, trend=None):
 
         if trend is not None:
             with st.expander("Show the trend behind this finding"):
-                st.plotly_chart(driver_figure(trend, ev.strength), width="stretch", key=f"trend_{ev.id}")
+                fig = driver_figure(trend, ev.strength, palette=active_palette())
+                st.plotly_chart(fig, width="stretch", key=f"trend_{ev.id}")
                 st.caption(
                     "Both panels are indexed so the average of the earlier months is 100. The dashed "
                     "line is the comparison group the finding was measured against. Drawn from the "
@@ -297,7 +343,8 @@ def render_event(ev):
     elif kind == "plan":
         st.markdown(f"**Plan.** {data['text']}")
     elif kind == "tool_call":
-        st.markdown(f"**Step {data['step']}** · {_call_text(data['tool'], data['args'])}")
+        st.markdown(f"**Step {data['step']} · {step_label(data['tool'], data['args'])}**")
+        st.caption(f"({_call_text(data['tool'], data['args'])})")
     elif kind == "evidence":
         rows = [{
             "Finding": label(e) + (f" · {metric_note(e)}" if metric_note(e) else ""),
@@ -333,6 +380,11 @@ def sidebar(client):
         st.radio("Investigation engine", options, key="engine")
         if client is None:
             st.caption("No `GEMINI_API_KEY` or `ANTHROPIC_API_KEY` found, so only the offline plan is available.")
+        st.selectbox(
+            "Chart colours", list(PALETTES), key="palette_name",
+            index=list(PALETTES).index(st.session_state.get("palette_name", DEFAULT_PALETTE)),
+        )
+        st.caption("Cosmetic only — strong/moderate/weak keep their own colours everywhere.")
         with st.expander("What do the strength labels mean?"):
             st.markdown(
                 "**Strong / moderate / weak** rate how well the data supports a finding. "
@@ -371,7 +423,7 @@ def nav(suffix=""):
 
 def data_picker():
     ds = active_dataset()
-    with st.expander(f"Data: {ds['label']}", expanded=False):
+    with st.expander(f"Data: {ds['label']}", expanded=not st.session_state.get("data_chosen", False)):
         source = st.radio("Data source", ["Demo scenario", "Upload your own CSVs"], key="data_source", horizontal=True)
         if source == "Demo scenario":
             names = list(SCENARIOS)
@@ -427,7 +479,7 @@ def screen_command(orders):
     c4.metric("vs. earlier-month average", f"{(latest / earlier - 1) * 100:+.1f}%")
     st.markdown('<p class="stage-note">Quick look only. The investigation below computes its own, traceable figures.</p>',
                 unsafe_allow_html=True)
-    st.plotly_chart(revenue_chart(orders), width="stretch")
+    st.plotly_chart(revenue_chart(orders, palette=active_palette()), width="stretch")
 
     st.subheader("What do you want to know?")
     st.text_area("Business question", key="question", height=90, label_visibility="collapsed")
@@ -471,7 +523,8 @@ def screen_progress(toolkit, client, nav_slot):
         return
     st.caption(f"Question: {inv.question}")
     for step in inv.steps:
-        st.markdown(f"**Step {step['step']}** · {_call_text(step['tool'], step['args'])}")
+        st.markdown(f"**Step {step['step']} · {step_label(step['tool'], step['args'])}**")
+        st.caption(f"({_call_text(step['tool'], step['args'])})")
         if step["narration"]:
             st.markdown(f"> {step['narration']}")
     for note in inv.notes:
@@ -491,7 +544,8 @@ def trends_section(orders):
     )
     frame = metric_by_group(orders, metric, None if group == "overall" else group)
     title = METRICS[metric] + " by month" + ("" if group == "overall" else f", by {group}")
-    st.plotly_chart(metric_figure(frame, title, money=metric != "orders"), width="stretch", key="trend_metric_chart")
+    fig = metric_figure(frame, title, money=metric != "orders", palette=active_palette())
+    st.plotly_chart(fig, width="stretch", key="trend_metric_chart")
     st.caption("The red ring marks the latest month, the one under investigation.")
 
 
@@ -557,7 +611,7 @@ def screen_evidence(orders, marketing, client=None):
     )
 
     left, right = st.columns(2)
-    left.plotly_chart(revenue_chart(orders), width="stretch")
+    left.plotly_chart(revenue_chart(orders, palette=active_palette()), width="stretch")
     fig = causes_chart(inv.evidence)
     if fig is not None:
         right.plotly_chart(fig, width="stretch")
@@ -649,6 +703,30 @@ def time_frame_controls():
         )
 
 
+def scenario_waterfall(sc):
+    """Baseline -> revenue recovered -> cost of the option -> gross profit
+    change. Built only from sc.revenue_total and sc.gross_profit_total, the
+    same two numbers already shown in the metrics above and the math table
+    below — the middle step is just their difference, so the bars land
+    exactly on the gross-profit total with no new figure invented."""
+    cost = sc.gross_profit_total - sc.revenue_total
+    fig = go.Figure(go.Waterfall(
+        orientation="v",
+        measure=["absolute", "relative", "relative", "total"],
+        x=["Baseline", "Revenue recovered", "Cost of the option", "Gross profit change"],
+        y=[0, sc.revenue_total, cost, 0],
+        text=["0", f"{sc.revenue_total:+,.0f}", f"{cost:+,.0f}", f"{sc.gross_profit_total:+,.0f}"],
+        textposition="outside",
+        connector=dict(line=dict(color="#9ca3af")),
+        increasing=dict(marker=dict(color="#0f766e")),
+        decreasing=dict(marker=dict(color="#b45309")),
+        totals=dict(marker=dict(color="#2563eb")),
+        hovertemplate="%{x}: %{y:+,.0f}<extra></extra>",
+    ))
+    fig.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), showlegend=False)
+    return fig
+
+
 def scenario_panel(opt, inv, orders):
     """Sliders, headline figures and the step-by-step math for one option."""
     if opt.kind in ("act", "test") and opt.id != "sequence_fixes":
@@ -687,6 +765,8 @@ def scenario_panel(opt, inv, orders):
                       "Gross profit does not break even within this horizon even if all of the revenue "
                       "at stake comes back."),
             )
+        if sc.gross_profit_total is not None:
+            st.plotly_chart(scenario_waterfall(sc), width="stretch", key=f"waterfall_{opt.id}")
     st.caption(sc.summary)
     label_text = "What waiting leaves open" if opt.kind == "hold" else "Show the math"
     with st.expander(label_text):

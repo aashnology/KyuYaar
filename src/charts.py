@@ -3,18 +3,21 @@
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from palette import get_palette
+
+# Fixed regardless of the chosen colour preset: judges reading the evidence
+# screen need strong/moderate/weak to mean the same colour everywhere.
 STRENGTH_COLOR = {"strong": "#0f766e", "moderate": "#b45309", "weak": "#6b7280"}
-LATEST_COLOR = "#dc2626"
-_GREY = "#9ca3af"
-_PALETTE = ["#2563eb", "#0f766e", "#b45309", "#7c3aed", "#db2777", "#4b5563"]
 
 
-def metric_figure(frame, title, money=False):
+def metric_figure(frame, title, money=False, palette=None):
     """Monthly metric, one line per column. The latest month is marked, since it
     is the month the investigation is about."""
+    pal = get_palette(palette)
+    series_colors, latest_color = pal["series"], pal["latest"]
     fig = go.Figure()
     for i, col in enumerate(frame.columns):
-        color = _PALETTE[i % len(_PALETTE)]
+        color = series_colors[i % len(series_colors)]
         fig.add_trace(go.Scatter(
             x=list(frame.index), y=list(frame[col]), mode="lines+markers", name=str(col),
             line=dict(color=color, width=2), marker=dict(size=5),
@@ -22,7 +25,7 @@ def metric_figure(frame, title, money=False):
         ))
     fig.add_trace(go.Scatter(
         x=[frame.index[-1]] * len(frame.columns), y=[frame.iloc[-1][c] for c in frame.columns],
-        mode="markers", marker=dict(size=11, color=LATEST_COLOR, symbol="circle-open", line=dict(width=2)),
+        mode="markers", marker=dict(size=11, color=latest_color, symbol="circle-open", line=dict(width=2)),
         name="latest month", hoverinfo="skip", showlegend=False,
     ))
     fig.update_layout(
@@ -33,9 +36,10 @@ def metric_figure(frame, title, money=False):
     return fig
 
 
-def driver_figure(trend, strength):
+def driver_figure(trend, strength, palette=None):
     """Driver on top, orders below, each against the comparison segments the
     finding was measured against. 100 = the average of all earlier months."""
+    grey = get_palette(palette)["comparison"]
     color = STRENGTH_COLOR[strength]
     fig = make_subplots(
         rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.14,
@@ -50,7 +54,7 @@ def driver_figure(trend, strength):
     for row, seg, ctl in rows:
         fig.add_trace(go.Scatter(
             x=trend.months, y=ctl, mode="lines", name=comparison, legendgroup="ctl",
-            showlegend=row == 1, line=dict(color=_GREY, width=2, dash="dash"),
+            showlegend=row == 1, line=dict(color=grey, width=2, dash="dash"),
             hovertemplate="comparison %{x}: %{y:.1f}<extra></extra>",
         ), row=row, col=1)
         fig.add_trace(go.Scatter(
@@ -58,7 +62,7 @@ def driver_figure(trend, strength):
             showlegend=row == 1, line=dict(color=color, width=3), marker=dict(size=6),
             hovertemplate=f"{trend.segment} %{{x}}: %{{y:.1f}}<extra></extra>",
         ), row=row, col=1)
-        fig.add_hline(y=100, line=dict(color=_GREY, width=1, dash="dot"), row=row, col=1)
+        fig.add_hline(y=100, line=dict(color=grey, width=1, dash="dot"), row=row, col=1)
     fig.update_layout(
         height=470, margin=dict(l=10, r=10, t=60, b=10),
         legend=dict(orientation="h", y=-0.08), yaxis_title=None, yaxis2_title=None,
