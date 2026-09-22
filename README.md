@@ -55,6 +55,7 @@ The statistical methods themselves are described in the module docstrings under 
 | 7 | Three more ground-truth scenarios (channel-only loss, unexplained demand fall, flat month) checked over many random draws; upload your own four CSVs with validation | done |
 | — | Hardening before recommendation logic: one strength scale, the strength rule documented, end-to-end determinism proof, off-script questions declined | done |
 | 8 | `recommend()`: ranks the actionable options by projected gross profit adjusted for risk, marks one "Recommended" (or none, if the evidence or the projections don't support it) | done |
+| 9 | Real-data validation: `src/adapters/olist.py` maps the real Olist dataset onto the canonical schema; tools run unmodified | adapter + tests done; end-to-end run against the downloaded dataset in progress — see `DEMO.md` |
 
 ## Run it
 
@@ -79,7 +80,7 @@ python -m pytest                   # full test suite
 python scripts/generate_data.py --all   # rewrite every scenario's CSVs (seeded, reproducible)
 ```
 
-Verification scripts per layer (`scripts/verify_layer1.py` through `verify_layer7.py`) check each layer's output against known ground truth — see `DEMO.md` for what they report.
+Verification scripts per layer (`scripts/verify_layer1.py` through `verify_layer9.py`) check each layer's output against known ground truth — see `DEMO.md` for what they report. `verify_layer9.py` needs the real Olist CSVs, not committed to the repo (see `DEMO.md`).
 
 **Bring your own data:** the app accepts four CSVs (customers, orders, products, marketing) and validates schema, values, and keys before running — see `src/validation.py` for the exact rules, and the app's own error messages for what to fix.
 

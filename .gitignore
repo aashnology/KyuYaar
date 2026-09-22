@@ -4,3 +4,5 @@ __pycache__/
 venv/
 .ipynb_checkpoints/
 decision_log/
+data/olist_raw/
+data/olist_adapted/

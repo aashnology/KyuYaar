@@ -76,6 +76,25 @@ Checked over many random draws (`scripts/verify_layer7.py 20`, seeds 1000-1019),
 - `channel_loss`: West marketing recovered in 20/20 draws, 0 false causes.
 - `demand_shock` and `flat`: 0 false causes in 40/40 draws — every one correctly ended in "insufficient data" with only a hold option, even though `demand_shock` showed a real 14.6%-27.6% revenue drop.
 
+## Layer 9: does it hold up on real data?
+
+Everything above ran on the synthetic generator — built to have a known answer, which is exactly what makes it unsuitable for proving the pipeline works on data nobody designed around it. Layer 9 adapts a real dataset instead of touching the tools: `src/adapters/olist.py` maps the raw Olist Brazilian E-Commerce dataset (Kaggle, ~100k real orders, 2016-2018) plus the separate Marketing Funnel by Olist dataset onto KyuYaar's canonical schema. `baseline_trend`, `segment_breakdown`, `aov_volume_decomposition`, `marketing_effect`, `marketing_channel_analysis` and `price_effect` run completely unmodified on the result.
+
+A real dataset doesn't hand over every canonical column cleanly. Rather than invent what's missing, the adapter fills each gap with a documented, obvious placeholder and records it:
+
+| Canonical field | Olist reality | What the adapter does |
+|---|---|---|
+| `orders.channel` | No order-level marketing channel exists anywhere in the raw data | Constant `"unknown"` — `marketing_channel_analysis` correctly has nothing to attribute orders to |
+| `products.cost` | No cost/COGS field, only price paid | Constant `0.0` — read only by the Layer 5 scenario engine, which Layer 9 does not validate |
+| `marketing.spend` | The funnel dataset tracks leads and closed deals, not ad spend in currency | Constant `0.0` — `marketing_effect` and `marketing_channel_analysis` will correctly find no spend-linked support |
+| `marketing.region` | Only assignable via a closed deal's seller state — most leads never close | Leads that never closed are dropped, not guessed at (share reported at run time) |
+| `customers.customer_id` | Olist's own `customer_id` is per-order, not per-person | Uses `customer_unique_id`, Olist's stable per-person id, instead |
+| `customers.region` | `customer_state`, 27 values, heavily skewed toward São Paulo | Bucketed into Brazil's 5 official macro-regions for comparison groups with enough volume each |
+
+Run `python scripts/verify_layer9.py path/to/olist/csvs` (all Olist and Marketing Funnel CSVs in one folder — not committed to the repo, see `.gitignore`) to adapt the data, run it through the real upload validator, run the standard investigation plan, and re-run the full test suite as a regression check.
+
+**Status:** the adapter and its unit tests (`tests/test_olist_adapter.py`, fixture-based, no download required) are done and pass, and the full existing suite passes unmodified alongside them. The end-to-end run against the actual downloaded CSVs — what comes out High/Medium on real 2016-2018 data, and the full list of what degrades relative to the synthetic scenarios — is the next step once the dataset is in hand; this section will be filled in with those results rather than left as a plan.
+
 ## What was verified, layer by layer
 
 On the synthetic dataset (45% cut to paid marketing in North, 10% price rise on Electronics, both in the final month):
