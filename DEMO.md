@@ -78,22 +78,50 @@ Checked over many random draws (`scripts/verify_layer7.py 20`, seeds 1000-1019),
 
 ## Layer 9: does it hold up on real data?
 
-Everything above ran on the synthetic generator — built to have a known answer, which is exactly what makes it unsuitable for proving the pipeline works on data nobody designed around it. Layer 9 adapts a real dataset instead of touching the tools: `src/adapters/olist.py` maps the raw Olist Brazilian E-Commerce dataset (Kaggle, ~100k real orders, 2016-2018) plus the separate Marketing Funnel by Olist dataset onto KyuYaar's canonical schema. `baseline_trend`, `segment_breakdown`, `aov_volume_decomposition`, `marketing_effect`, `marketing_channel_analysis` and `price_effect` run completely unmodified on the result.
+Everything above ran on the synthetic generator — built to have a known answer, which is exactly what makes it unsuitable for proving the pipeline works on data nobody designed around it. Layer 9 adapts a real dataset instead of touching the tools: `src/adapters/olist.py` maps the raw Olist Brazilian E-Commerce dataset (Kaggle, ~100k real orders, 2016-2018) plus the separate Marketing Funnel by Olist dataset onto KyuYaar's canonical schema. `baseline_trend`, `segment_breakdown`, `aov_volume_decomposition`, `marketing_effect`, `marketing_channel_analysis` and `price_effect` run completely unmodified on the result — every gap below is the adapter's problem to document, never the tools'.
 
 A real dataset doesn't hand over every canonical column cleanly. Rather than invent what's missing, the adapter fills each gap with a documented, obvious placeholder and records it:
 
 | Canonical field | Olist reality | What the adapter does |
 |---|---|---|
+| `orders` grain | A real order often has several different products; canonical `orders.csv` is one row per order | Aggregated per order: quantity = item count, revenue = their total, `product_id`/category = the order's highest-revenue item (its "dominant" item) — true for 10% of real orders (9,635/96,478) |
 | `orders.channel` | No order-level marketing channel exists anywhere in the raw data | Constant `"unknown"` — `marketing_channel_analysis` correctly has nothing to attribute orders to |
 | `products.cost` | No cost/COGS field, only price paid | Constant `0.0` — read only by the Layer 5 scenario engine, which Layer 9 does not validate |
-| `marketing.spend` | The funnel dataset tracks leads and closed deals, not ad spend in currency | Constant `0.0` — `marketing_effect` and `marketing_channel_analysis` will correctly find no spend-linked support |
-| `marketing.region` | Only assignable via a closed deal's seller state — most leads never close | Leads that never closed are dropped, not guessed at (share reported at run time) |
+| `customers.segment` | No customer tier/repeat-buyer field at all | Constant `"Unknown"` — the same fallback `validation.py` itself uses when a real upload omits this optional column |
+| `marketing.spend` | The funnel dataset tracks leads and closed deals, not ad spend in currency | Constant `0.0` |
+| `marketing.region` | Only assignable via a closed deal's seller state — most leads never close | Leads that never closed are dropped, not guessed at: 842/8,000 (11%) could be assigned a region |
 | `customers.customer_id` | Olist's own `customer_id` is per-order, not per-person | Uses `customer_unique_id`, Olist's stable per-person id, instead |
 | `customers.region` | `customer_state`, 27 values, heavily skewed toward São Paulo | Bucketed into Brazil's 5 official macro-regions for comparison groups with enough volume each |
 
-Run `python scripts/verify_layer9.py path/to/olist/csvs` (all Olist and Marketing Funnel CSVs in one folder — not committed to the repo, see `.gitignore`) to adapt the data, run it through the real upload validator, run the standard investigation plan, and re-run the full test suite as a regression check.
+Run `python scripts/verify_layer9.py path/to/olist/csvs` (all Olist and Marketing Funnel CSVs in one folder — not committed to the repo, see `.gitignore`) to reproduce this end to end.
 
-**Status:** the adapter and its unit tests (`tests/test_olist_adapter.py`, fixture-based, no download required) are done and pass, and the full existing suite passes unmodified alongside them. The end-to-end run against the actual downloaded CSVs — what comes out High/Medium on real 2016-2018 data, and the full list of what degrades relative to the synthetic scenarios — is the next step once the dataset is in hand; this section will be filled in with those results rather than left as a plan.
+### What actually happened, running it
+
+**The bring-your-own-CSV upload gate correctly refuses this data.** `marketing.csv` (built from the Marketing Funnel dataset) has no rows after 2018-05-31; the order data runs to 2018-08-29. `validation.py` catches this upfront — *"marketing.csv ends 2018-05-31 but orders run to 2018-08-29"* — exactly the kind of real, structural mismatch between two independently-published Kaggle datasets that a bring-your-own upload gate exists to catch, rather than a messy-file quirk. A real person uploading this pair of files would be stopped here, correctly.
+
+**Bypassing that gate to test Layers 1-4 directly** (the same way the app loads its own shipped dataset, via `data_loader.enrich`, and dropping the partial final month the same way `validation.py`'s own "leave out the partial month" option would) — `baseline_trend`, `aov_volume_decomposition` (overall, by region, by category) and `segment_breakdown` (by region, by category) all ran cleanly across 23 real months, no crash, no special case:
+
+- **`baseline_trend` came out strong (High):** real July 2018 revenue was **+68.7%** above its own 22-month baseline — Olist's real order volume grew explosively over 2016-2018, so on this real data revenue didn't drop at all. The tool reported that honestly rather than forcing the demo's "revenue dropped" framing onto data that doesn't show a drop.
+- Month-over-month, the move was much smaller (+1.6%), and both its order-count and AOV components came out **weak** — correctly graded as within normal variation, not overstated into a story.
+- Across all 240 pieces of evidence produced, **237 were weak, 2 moderate** (a real AOV jump in two narrow categories — `costruction_tools_tools`, `garden_tools` — both honestly caveated, one for a sample of only 4 orders), and the 1 strong result above. No false "strong" causal-sounding claim anywhere in the run.
+
+**`marketing_effect` and `price_effect` crashed outright** rather than reporting "insufficient data":
+- `marketing_effect` hit an uncaught `KeyError` — with `marketing.csv` having zero rows in the investigation's latest month (the same gap the upload gate already caught), the tool's internal pivot has no column for that month to compare against.
+- `price_effect` hit an uncaught `ValueError` (NaN → int) on the long tail of real product categories with too little data in one of the two compared months — a case the synthetic dataset's five clean, well-populated categories never exercised.
+
+Both are genuine robustness gaps in `src/effects.py`/`src/channels.py`, surfaced only by real data's sparse tail and cross-dataset time-window mismatches — logged here as findings, not patched, since Layer 9's job is adapting data to the tools, not rewriting the tools.
+
+### Summary
+
+| | |
+|---|---|
+| Real orders adapted | 96,478 (from 99,441 raw; delivered only) |
+| Real products / customers | 32,951 / 96,096 |
+| Real marketing rows usable | 380 (11% of 8,000 leads — see table above) |
+| Upload-gate verdict | **Rejected**, correctly, for a real cross-dataset time gap |
+| Core evidence tools (Layers 1-3 + `segment_breakdown`) | **Ran cleanly**, no crash, no relaxed threshold |
+| `marketing_effect` / `price_effect` | **Crashed** — real robustness gaps, not seen on synthetic data |
+| Evidence produced | 240 pieces: 1 strong, 2 moderate, 237 weak |
 
 ## What was verified, layer by layer
 

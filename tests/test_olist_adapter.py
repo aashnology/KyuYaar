@@ -83,6 +83,26 @@ def test_orders_customer_id_is_the_stable_person_id_not_the_per_order_one():
     assert row["customer_id"] == "u1"          # customer_unique_id, not "c1"
 
 
+def test_orders_multi_item_order_is_aggregated_to_one_canonical_row():
+    orders_raw = pd.DataFrame({
+        "order_id": ["o1"], "customer_id": ["c1"], "order_status": ["delivered"],
+        "order_purchase_timestamp": ["2018-01-05 10:00:00"],
+    })
+    items_raw = pd.DataFrame({
+        "order_id": ["o1", "o1"], "product_id": ["p_cheap", "p_pricey"],
+        "price": ["10.00", "90.00"], "freight_value": ["1.00", "9.00"],
+    })
+    customers_raw = pd.DataFrame({"customer_id": ["c1"], "customer_unique_id": ["u1"], "customer_state": ["SP"]})
+
+    canonical, report = adapt_orders(orders_raw, items_raw, customers_raw)
+    assert len(canonical) == 1                                    # one order in, one canonical row out
+    row = canonical.iloc[0]
+    assert row["quantity"] == 2                                   # two items
+    assert row["revenue"] == pytest.approx(110.00)                # (10+1) + (90+9)
+    assert row["product_id"] == "p_pricey"                        # the higher-revenue item, not the first row
+    assert any("contained more than one item" in n for n in report.notes)
+
+
 # ------------------------------------------------------------- products ----
 
 def test_products_category_is_translated_when_a_translation_exists():
@@ -125,6 +145,12 @@ def test_customers_unknown_state_does_not_crash_and_is_labeled():
     canonical, report = adapt_customers(raw)
     assert canonical.iloc[0]["region"] == "unknown"
     assert any("not in STATE_TO_MACROREGION" in n for n in report.notes)
+
+
+def test_customers_segment_is_the_documented_unknown_placeholder():
+    canonical, report = adapt_customers(_customers_raw())
+    assert (canonical["segment"] == "Unknown").all()
+    assert any("no customer segment/tier field" in n for n in report.notes)
 
 
 # ------------------------------------------------------------ marketing ----

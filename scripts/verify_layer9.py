@@ -27,14 +27,14 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 import pandas as pd  # noqa: E402
 
 from adapters.olist import CORE_FILES, FUNNEL_FILES, adapt_all, write_canonical_csvs  # noqa: E402
-from orchestrator import STANDARD_PLAN, investigate  # noqa: E402
+from data_loader import load_data  # noqa: E402
+from orchestrator import STANDARD_PLAN  # noqa: E402
 from strength import BRIEF_NAME  # noqa: E402
 from toolkit import Toolkit  # noqa: E402
 from validation import TABLES, load_upload  # noqa: E402
 
 DEFAULT_RAW_DIR = REPO_ROOT / "data" / "olist_raw"
 ADAPTED_DIR = REPO_ROOT / "data" / "olist_adapted"
-QUESTION = "Revenue dropped last month. Why?"
 
 
 def _check_raw_files_present(raw_dir):
@@ -70,7 +70,8 @@ def adapt_and_validate(raw_dir):
 
     sources = {name: ADAPTED_DIR / f"{name}.csv" for name in TABLES}
     result = load_upload(sources)
-    print(f"\nBring-your-own-CSV validator: {'ACCEPTED' if result.ok else 'REJECTED'}")
+    print(f"\nBring-your-own-CSV validator (what a real person's own upload would face): "
+          f"{'ACCEPTED' if result.ok else 'REJECTED'}")
     for m in result.errors:
         print(f"  error:   {m}")
     for m in result.warnings:
@@ -84,18 +85,31 @@ def run_investigation(orders, marketing):
     print("\n" + "=" * 78)
     print("Step 2: standard investigation plan (offline, no LLM) on real data")
     print("=" * 78)
-    inv = list(investigate(QUESTION, Toolkit(orders, marketing)))[-1].data["investigation"]
-    for ev in inv.evidence:
+    # Run each tool independently rather than through orchestrator.investigate(),
+    # which treats the plan as one sequence and aborts entirely on the first
+    # tool that raises. marketing_effect/marketing_channel_analysis are expected
+    # to fail outright here (marketing.csv has no rows past the funnel data's own
+    # end date, already flagged above) -- that is a real, reportable gap, not a
+    # reason to hide whether the core evidence tools worked.
+    tk = Toolkit(orders, marketing)
+    all_evidence = []
+    for name, args in STANDARD_PLAN:
+        try:
+            all_evidence.extend(tk.run(name, args))
+        except Exception as exc:
+            print(f"\n[COULD NOT RUN] {name}{args or ''}: {type(exc).__name__}: {exc}")
+
+    for ev in all_evidence:
         print(f"\n[{BRIEF_NAME[ev.strength]:>6} / {ev.strength:<8}] {ev.id}")
         print(f"  {ev.hypothesis}")
         if ev.caveats:
             print(f"  caveats: {'; '.join(ev.caveats)}")
-    actionable = [e for e in inv.evidence if e.strength != "weak"]
-    print(f"\n{len(actionable)}/{len(inv.evidence)} pieces of evidence came out Medium or High.")
+    actionable = [e for e in all_evidence if e.strength != "weak"]
+    print(f"\n{len(actionable)}/{len(all_evidence)} pieces of evidence came out Medium or High.")
     if not actionable:
         print("Nothing came out Medium/High on real data -- that is a valid, reportable result "
               "(see the mapping notes above for why), not a bug to work around.")
-    return inv
+    return all_evidence
 
 
 def run_regression_suite():
@@ -123,7 +137,27 @@ if __name__ == "__main__":
         orders, marketing = validation_result.data
         run_investigation(orders, marketing)
     else:
-        print("\nSkipping the investigation step: the validator rejected the adapted data (see errors above).")
+        print("\nThe validator rejected the adapted data as a real upload would be (see errors above). "
+              "Running the core pipeline directly instead, the same way the app loads its own shipped "
+              "dataset (data_loader.enrich, bypassing the upload gate) -- this is what actually tests "
+              "whether Layers 1-4 work on real data, independent of whether this particular pair of "
+              "real datasets happens to line up well enough to pass the strict upload gate.")
+        try:
+            orders, marketing = load_data(ADAPTED_DIR)
+            # Olist's own last month is famously sparse (the extract was pulled mid-month), which the
+            # validator already flagged above as "partial last month" -- the same condition
+            # validate_tables(drop_partial_last_month=True) exists to handle for any dataset, not an
+            # Olist special case. Applying it here rather than leaving the partial month in.
+            cutoff = orders["order_date"].max().to_period("M").start_time
+            before = len(orders)
+            orders = orders[orders["order_date"] < cutoff].reset_index(drop=True)
+            marketing = marketing[marketing["date"] < cutoff].reset_index(drop=True)
+            print(f"\nDropped the partial last month ({before - len(orders)} orders); investigating the "
+                  f"last complete month instead, same as the app's own 'leave out the partial month' option.")
+            run_investigation(orders, marketing)
+        except Exception as exc:
+            print(f"\nThe evidence engine itself could not run on this data ({type(exc).__name__}: {exc}).")
+            ok = False
 
     ok &= run_regression_suite()
     sys.exit(0 if ok else 1)

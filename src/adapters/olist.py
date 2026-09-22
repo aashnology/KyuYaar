@@ -86,6 +86,17 @@ CHANNEL_VOCAB = ("Paid", "Organic", "Email", "Referral", "Other")
 # Olist source. Carried alongside MappingReport.notes so a caller that skips
 # the docstring still gets the list.
 MAPPING_NOTES = {
+    "orders.grain": (
+        "Real Olist orders often contain more than one product; KyuYaar's canonical "
+        "orders.csv is one row per order (order_id is a de-facto unique key in "
+        "validation.py). The adapter aggregates each order to one canonical row: "
+        "quantity is the number of items, revenue is their total, and "
+        "product_id/category comes from whichever item earned the order the most "
+        "revenue. segment_breakdown and price_effect on category therefore reflect "
+        "each multi-item order's single dominant product, not every item it "
+        "contained -- a real simplification the synthetic single-item orders never "
+        "had to make."
+    ),
     "orders.channel": (
         "Olist records no order-level marketing channel -- there is nothing in "
         "olist_orders_dataset.csv or olist_order_items_dataset.csv that says how a "
@@ -117,6 +128,12 @@ MAPPING_NOTES = {
         "funnel -- see MappingReport.notes for the exact share on this run. Leads "
         "that never closed have no seller and are dropped rather than assigned a "
         "guessed region."
+    ),
+    "customers.segment": (
+        "Olist has no customer segment/tier field at all -- no repeat-buyer or VIP "
+        "label anywhere in the raw data. Every canonical customer row is filled "
+        "with the constant 'Unknown', the same placeholder validation.py's own "
+        "upload path uses when a real person's file omits this optional column."
     ),
     "customers.customer_id": (
         "Olist's own customer_id is per-order, not per-person -- a returning buyer "
@@ -188,9 +205,21 @@ def read_raw(data_dir, require_funnel=True):
 
 def adapt_orders(orders_raw, items_raw, customers_raw, report=None):
     """order_items is Olist's unit grain: one row per item, no quantity field,
-    so quantity is 1 on every canonical row -- not a placeholder, that is
-    genuinely what the raw data records. revenue is price + freight_value per
-    item, matching Kaggle's own convention for "amount paid" on a line.
+    so a line's quantity is 1 -- not a placeholder, that is genuinely what the
+    raw data records. A line's revenue is price + freight_value, matching
+    Kaggle's own convention for "amount paid" on a line.
+
+    KyuYaar's canonical orders.csv is one row per order (validation.py treats
+    order_id as a de-facto unique key), but a real Olist order often has
+    several different products in it -- there is no honest way to keep both
+    "one row per order" and "one product_id per row" at once. This adapter
+    keeps the canonical grain and aggregates: quantity is the number of items
+    in the order, revenue is their total, and product_id/category is taken
+    from whichever item earned the order the most revenue (the order's
+    "dominant" item). segment_breakdown and price_effect on category will
+    then reflect that dominant item, not every item a multi-item order
+    contained -- see MAPPING_NOTES['orders.grain'] and the note this run adds
+    with the actual multi-item share.
 
     Only orders with status 'delivered' are kept: canceled/unavailable orders
     have no real revenue to attribute, and Olist's own order_items table often
@@ -228,13 +257,29 @@ def adapt_orders(orders_raw, items_raw, customers_raw, report=None):
         report.add(f"orders: {dropped_no_order} order_items row(s) belonged to a non-delivered or "
                     f"unmatched order; dropped.")
 
+    merged["line_revenue"] = (merged["price"] + merged["freight_value"]).round(2)
+    n_orders = merged["order_id"].nunique()
+    multi_item = merged.groupby("order_id").size().gt(1).sum()
+    if multi_item:
+        report.add(f"orders: {multi_item}/{n_orders} orders ({multi_item / n_orders:.0%}) contained more "
+                    f"than one item; aggregated to one canonical row each (see MAPPING_NOTES['orders.grain']).")
+    report.add(MAPPING_NOTES["orders.grain"])
+
+    agg = merged.sort_values("line_revenue", ascending=False).groupby("order_id", as_index=False).agg(
+        customer_id=("customer_unique_id", "first"),
+        product_id=("product_id", "first"),          # first row after the sort above = highest-revenue item
+        order_date=("order_purchase_timestamp", "first"),
+        quantity=("product_id", "size"),
+        revenue=("line_revenue", "sum"),
+    )
+
     canonical = pd.DataFrame({
-        "order_id": merged["order_id"],
-        "customer_id": merged["customer_unique_id"],
-        "product_id": merged["product_id"],
-        "order_date": pd.to_datetime(merged["order_purchase_timestamp"]).dt.floor("D"),
-        "quantity": 1,
-        "revenue": (merged["price"] + merged["freight_value"]).round(2),
+        "order_id": agg["order_id"],
+        "customer_id": agg["customer_id"],
+        "product_id": agg["product_id"],
+        "order_date": pd.to_datetime(agg["order_date"]).dt.floor("D"),
+        "quantity": agg["quantity"],
+        "revenue": agg["revenue"].round(2),
         "channel": "unknown",
     })
     report.add(MAPPING_NOTES["orders.channel"])
@@ -295,9 +340,11 @@ def adapt_customers(customers_raw, report=None):
     canonical = pd.DataFrame({
         "customer_id": customers["customer_unique_id"],
         "region": region,
+        "segment": "Unknown",
     })
     report.add(MAPPING_NOTES["customers.customer_id"])
     report.add(MAPPING_NOTES["customers.region_granularity"])
+    report.add(MAPPING_NOTES["customers.segment"])
     report.counts["customers_rows"] = len(canonical)
     return canonical, report
 
