@@ -66,7 +66,9 @@ same_evidence = evidence_dump(inv).replace(json.dumps(HOSTILE)[1:-1], "Electroni
 texts = [s["narration"] for s in inv.steps] + [inv.summary]
 guardrail_clean = all(check_text(t, inv.evidence).ok for t in texts)
 
-print(f"Tools run: {len(inv.steps)}   chosen by the model: {len(inv.steps) - filled}   filled in afterwards: {filled}")
+# When the model call fails the run finishes offline, so no step counts as the model's choice.
+model_chose = 0 if failed else len(inv.steps) - filled
+print(f"Tools run: {len(inv.steps)}   chosen by the model: {model_chose}   filled in afterwards: {filled}")
 print(f"Readouts written by the model: {llm_steps}   Summary written by: {inv.summary_source}")
 print(f"Guardrail blocks: {len(inv.guardrail_blocks)}")
 for note in inv.notes:
@@ -74,7 +76,7 @@ for note in inv.notes:
 
 checks = {
     "model call did not fail": not failed,
-    "model drove at least one step": (len(inv.steps) - filled) > 0,
+    "model drove at least one step": model_chose > 0,
     "ran the standard plan and nothing else": ran == plan and len(inv.steps) == len(STANDARD_PLAN),
     "evidence identical to the clean run (label aside)": same_evidence,
     "every sentence shown passes the guardrail": guardrail_clean,
