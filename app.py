@@ -379,7 +379,7 @@ def sidebar(client):
             options.insert(0, f"Live LLM · {client.display} ({client.model})")
         st.radio("Investigation engine", options, key="engine")
         if client is None:
-            st.caption("No `GEMINI_API_KEY`, `FEATHERLESS_API_KEY` or `ANTHROPIC_API_KEY` found, so only the offline plan is available.")
+            st.caption("No `GEMINI_API_KEY` or `ANTHROPIC_API_KEY` found, so only the offline plan is available.")
         st.selectbox(
             "Chart colours", list(PALETTES), key="palette_name",
             index=list(PALETTES).index(st.session_state.get("palette_name", DEFAULT_PALETTE)),
