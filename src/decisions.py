@@ -16,7 +16,7 @@ from channels import channel_check
 from decomposition import signature_check
 from narration import label
 
-from strength import is_actionable, weakest
+from strength import is_actionable, is_insufficient, weakest
 
 
 @dataclass
@@ -205,17 +205,21 @@ def build_options(evidence) -> DecisionSet:
     causes.sort(key=lambda e: -(e.details.get("revenue_at_stake") or 0))
 
     not_supported = []
+    # Evidence the tools could not compute is not "tested and not supported";
+    # it is listed separately below, under what stays unresolved.
     weak_marketing = [_name(e) for e in evidence
-                      if e.id.startswith("stat_marketing_") and e.strength == "weak"]
+                      if e.id.startswith("stat_marketing_") and e.strength == "weak"
+                      and not is_insufficient(e)]
     weak_price = [_name(e) for e in evidence
-                  if e.id.startswith("stat_price_") and e.strength == "weak"]
+                  if e.id.startswith("stat_price_") and e.strength == "weak"
+                  and not is_insufficient(e)]
     if weak_marketing:
         not_supported.append("Marketing spend: " + ", ".join(sorted(weak_marketing)))
     if weak_price:
         not_supported.append("Pricing: " + ", ".join(sorted(weak_price)))
     weak_by_channel = {}
     for e in evidence:
-        if e.evidence_type == "channel" and e.strength == "weak":
+        if e.evidence_type == "channel" and e.strength == "weak" and not is_insufficient(e):
             weak_by_channel.setdefault(e.details["channel"], []).append(e.details["region"])
     if weak_by_channel:
         not_supported.append("Marketing by channel: " + "; ".join(
@@ -237,6 +241,19 @@ def build_options(evidence) -> DecisionSet:
                 f"Whether {chan['channel']} spend drives orders in the other channels of {_name(e)}, "
                 f"or something region-wide happened; channel data cannot separate the two."
             )
+    untestable = {}
+    for e in evidence:
+        if is_insufficient(e):
+            if e.evidence_type == "channel":
+                group, name = "Marketing by channel", f"{e.details['channel']} in {e.details['region']}"
+            else:
+                group = "Marketing spend" if e.id.startswith("stat_marketing_") else "Pricing"
+                name = _name(e)
+            untestable.setdefault(group, []).append(name)
+    if untestable:
+        listed = "; ".join(f"{g}: {', '.join(sorted(names))}" for g, names in untestable.items())
+        unresolved.append(f"Could not be tested with this data (insufficient data, so neither supported nor ruled out): {listed}.")
+
     stakes = [(_name(e), e.details.get("revenue_at_stake") or 0) for e in causes]
 
     if len(causes) >= 2:

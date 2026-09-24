@@ -8,7 +8,7 @@ the Evidence objects, so the numbers in it are correct by construction.
 
 from decomposition import signature_check
 
-from strength import WORD as _STRENGTH_WORD, is_actionable
+from strength import WORD as _STRENGTH_WORD, is_actionable, is_insufficient
 
 
 def label(ev) -> str:
@@ -124,11 +124,24 @@ def narrate_step(tool, args, evidence) -> str:
         driver = "marketing spend" if tool == "marketing_effect" else "pricing"
         unit = "region" if tool == "marketing_effect" else "category"
         notable = _notable(evidence)
-        if not notable:
+        untested = [e for e in evidence if is_insufficient(e)]
+        plural = "regions" if unit == "region" else "categories"
+        if untested and len(untested) == len(evidence):
             return (
-                f"No {unit} shows a move in {driver} that lines up with an order "
-                f"change, so {driver} is not supported as an explanation."
+                f"The data was not sufficient to test {driver} for any {unit}, so it is "
+                f"neither supported nor ruled out as an explanation."
             )
+        if not notable:
+            text = (
+                f"No {unit} shows a move in {driver} that lines up with an order "
+                f"change, so {driver} is not supported as an explanation"
+            )
+            if untested:
+                text += (
+                    f" among the {plural} that could be tested; the rest had insufficient "
+                    f"data, so {driver} is neither supported nor ruled out for them"
+                )
+            return text + "."
         parts = []
         for e in notable:
             p = e.details.get("p_value_text")
@@ -136,20 +149,35 @@ def narrate_step(tool, args, evidence) -> str:
                 f"{_STRENGTH_WORD[e.strength]} evidence: {e.hypothesis} "
                 f"(p {p}, {e.sample_size} orders)."
             )
-        plural = "regions" if unit == "region" else "categories"
-        rest = f"The other {plural} show no matching move in {driver}."
+        if untested:
+            rest = (
+                f"The other {plural} that could be tested show no matching move in {driver}; "
+                f"the rest had insufficient data to test."
+            )
+        else:
+            rest = f"The other {plural} show no matching move in {driver}."
         return " ".join(parts) + " " + rest
 
     if tool == "marketing_channel_analysis":
         notable = _notable(evidence)
-        if not notable:
+        untested = [e for e in evidence if is_insufficient(e)]
+        if untested and len(untested) == len(evidence):
             return (
-                "No paid channel shows a spend move that lines up with an order change in that "
-                "channel, so channel-level marketing is not supported as an explanation."
+                "The data was not sufficient to test any paid channel, so channel-level marketing "
+                "is neither supported nor ruled out as an explanation."
             )
+        if not notable:
+            text = (
+                "No paid channel shows a spend move that lines up with an order change in that "
+                "channel, so channel-level marketing is not supported as an explanation"
+            )
+            if untested:
+                text += " among the channels that could be tested; the rest had insufficient data"
+            return text + "."
         return (
             " ".join(_channel_lines(notable))
-            + " Every other channel and region shows no matching move in spend."
+            + (" Every other channel and region that could be tested shows no matching move in spend."
+               if untested else " Every other channel and region shows no matching move in spend.")
         )
 
     return " ".join(e.hypothesis + "." for e in evidence[:3])

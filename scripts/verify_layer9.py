@@ -29,7 +29,7 @@ import pandas as pd  # noqa: E402
 from adapters.olist import CORE_FILES, FUNNEL_FILES, adapt_all, write_canonical_csvs  # noqa: E402
 from data_loader import load_data  # noqa: E402
 from orchestrator import STANDARD_PLAN  # noqa: E402
-from strength import BRIEF_NAME  # noqa: E402
+from strength import BRIEF_NAME, is_insufficient  # noqa: E402
 from toolkit import Toolkit  # noqa: E402
 from validation import TABLES, load_upload  # noqa: E402
 
@@ -87,10 +87,11 @@ def run_investigation(orders, marketing):
     print("=" * 78)
     # Run each tool independently rather than through orchestrator.investigate(),
     # which treats the plan as one sequence and aborts entirely on the first
-    # tool that raises. marketing_effect/marketing_channel_analysis are expected
-    # to fail outright here (marketing.csv has no rows past the funnel data's own
-    # end date, already flagged above) -- that is a real, reportable gap, not a
-    # reason to hide whether the core evidence tools worked.
+    # tool that raises. Before Layer 11, marketing_effect and price_effect raised
+    # here (marketing.csv has no rows past the funnel data's own end date, and
+    # the long tail of categories has nothing to compare). They now return
+    # insufficient-data evidence for what cannot be tested; a call that still
+    # raises is reported below rather than hidden.
     tk = Toolkit(orders, marketing)
     all_evidence = []
     for name, args in STANDARD_PLAN:
@@ -100,12 +101,15 @@ def run_investigation(orders, marketing):
             print(f"\n[COULD NOT RUN] {name}{args or ''}: {type(exc).__name__}: {exc}")
 
     for ev in all_evidence:
-        print(f"\n[{BRIEF_NAME[ev.strength]:>6} / {ev.strength:<8}] {ev.id}")
+        tag = "n/a / insuff." if is_insufficient(ev) else f"{BRIEF_NAME[ev.strength]:>6} / {ev.strength:<8}"
+        print(f"\n[{tag}] {ev.id}")
         print(f"  {ev.hypothesis}")
         if ev.caveats:
             print(f"  caveats: {'; '.join(ev.caveats)}")
     actionable = [e for e in all_evidence if e.strength != "weak"]
-    print(f"\n{len(actionable)}/{len(all_evidence)} pieces of evidence came out Medium or High.")
+    untested = [e for e in all_evidence if is_insufficient(e)]
+    print(f"\n{len(actionable)}/{len(all_evidence)} pieces of evidence came out Medium or High; "
+          f"{len(untested)} could not be tested (insufficient data).")
     if not actionable:
         print("Nothing came out Medium/High on real data -- that is a valid, reportable result "
               "(see the mapping notes above for why), not a bug to work around.")

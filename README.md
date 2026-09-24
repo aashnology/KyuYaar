@@ -55,7 +55,8 @@ The statistical methods themselves are described in the module docstrings under 
 | 7 | Three more ground-truth scenarios (channel-only loss, unexplained demand fall, flat month) checked over many random draws; upload your own four CSVs with validation | done |
 | — | Hardening before recommendation logic: one strength scale, the strength rule documented, end-to-end determinism proof, off-script questions declined | done |
 | 8 | `recommend()`: ranks the actionable options by projected gross profit adjusted for risk, marks one "Recommended" (or none, if the evidence or the projections don't support it) | done |
-| 9 | Real-data validation: `src/adapters/olist.py` maps the real Olist dataset onto the canonical schema; tools run unmodified | done — core evidence tools ran clean on real data; upload gate correctly rejected a real cross-dataset time gap; two tools crash on real data's sparse tail (not patched, see `DEMO.md`) |
+| 9 | Real-data validation: `src/adapters/olist.py` maps the real Olist dataset onto the canonical schema; tools run unmodified | done — core evidence tools ran clean on real data; upload gate correctly rejected a real cross-dataset time gap; two tools crashed on real data's sparse tail (fixed in Layer 11, see `DEMO.md`) |
+| 11 | Harden `effects.py` and `channels.py`: comparisons that cannot be made on sparse or messy data return "insufficient data" Evidence instead of raising; no thresholds changed | done; Olist rerun in `DEMO.md` |
 
 ## Run it
 
@@ -87,7 +88,7 @@ Verification scripts per layer (`scripts/verify_layer1.py` through `verify_layer
 ## Known limits
 
 - One investigation type supported (why did revenue change); validated on real data in Layer 9 (Olist Brazilian E-Commerce + Marketing Funnel, ~100k real orders) as well as synthetic scenarios — see `DEMO.md` for what held up and what didn't.
-- `marketing_effect` and `price_effect` are not robust to two conditions real data exposed: a marketing table that doesn't cover the investigation's latest months, and product categories with too little data in one of the two compared months. Both crash rather than reporting "insufficient data"; not yet fixed (see `DEMO.md`, Layer 9).
+- Where a cause test cannot be run (a marketing table that doesn't cover the latest months, no spend or like-for-like product to measure a change from, no orders on one side), the tool returns weak evidence flagged as insufficient data instead of raising. It is untested, not "tested and not supported". Tiny cells (one or two orders) still get a graded result under the small-sample rule, and `marketing_channel_analysis` reads a missing latest month as zero spend; see `DEMO.md`, Layer 11 and Known limits.
 - Evidence is association, not proof of causation — every supported finding says so explicitly.
 - Layer 5 (scenario) projections depend on an assumed recovery share the user sets; the data measures the drop, not how much of it comes back.
 - Gross margin used in scenarios is product cost only — shipping, returns, fees, and labor aren't modeled, so projected gross profit is an upper bound.

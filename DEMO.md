@@ -105,11 +105,11 @@ Run `python scripts/verify_layer9.py path/to/olist/csvs` (all Olist and Marketin
 - Month-over-month, the move was much smaller (+1.6%), and both its order-count and AOV components came out **weak** — correctly graded as within normal variation, not overstated into a story.
 - Across all 240 pieces of evidence produced, **237 were weak, 2 moderate** (a real AOV jump in two narrow categories — `costruction_tools_tools`, `garden_tools` — both honestly caveated, one for a sample of only 4 orders), and the 1 strong result above. No false "strong" causal-sounding claim anywhere in the run.
 
-**`marketing_effect` and `price_effect` crashed outright** rather than reporting "insufficient data":
+**`marketing_effect` and `price_effect` crashed outright** rather than reporting "insufficient data" (as first run in Layer 9; fixed in Layer 11, see below):
 - `marketing_effect` hit an uncaught `KeyError` — with `marketing.csv` having zero rows in the investigation's latest month (the same gap the upload gate already caught), the tool's internal pivot has no column for that month to compare against.
 - `price_effect` hit an uncaught `ValueError` (NaN → int) on the long tail of real product categories with too little data in one of the two compared months — a case the synthetic dataset's five clean, well-populated categories never exercised.
 
-Both are genuine robustness gaps in `src/effects.py`/`src/channels.py`, surfaced only by real data's sparse tail and cross-dataset time-window mismatches — logged here as findings, not patched, since Layer 9's job is adapting data to the tools, not rewriting the tools.
+Both were genuine robustness gaps in `src/effects.py`, surfaced only by real data's sparse tail and cross-dataset time-window mismatches — logged as findings and deliberately not patched in Layer 9, whose job was adapting data to the tools, not rewriting them. Layer 11 fixed them.
 
 ### Summary
 
@@ -120,8 +120,40 @@ Both are genuine robustness gaps in `src/effects.py`/`src/channels.py`, surfaced
 | Real marketing rows usable | 380 (11% of 8,000 leads — see table above) |
 | Upload-gate verdict | **Rejected**, correctly, for a real cross-dataset time gap |
 | Core evidence tools (Layers 1-3 + `segment_breakdown`) | **Ran cleanly**, no crash, no relaxed threshold |
-| `marketing_effect` / `price_effect` | **Crashed** — real robustness gaps, not seen on synthetic data |
-| Evidence produced | 240 pieces: 1 strong, 2 moderate, 237 weak |
+| `marketing_effect` / `price_effect` | **Crashed** in Layer 9 — real robustness gaps, not seen on synthetic data (fixed in Layer 11) |
+| Evidence produced | 240 pieces from the tools that ran: 1 strong, 2 moderate, 237 weak (319 after Layer 11, below) |
+
+## Layer 11: sparse or messy data no longer crashes the cause tests
+
+Layer 9 found `marketing_effect` and `price_effect` raising on real data. `validation.py`'s smoke test kept that from reaching a live user by rejecting the whole upload, which meant one untestable hypothesis threw away every testable one. Layer 11 fixes it at the source in `src/effects.py` and `src/channels.py`: a comparison that cannot be made returns an **insufficient-data** Evidence instead of raising.
+
+**What insufficient data looks like.** Strength `weak` (so it can never back a decision option), `value` empty, `details["insufficient_data"]` true, a machine-readable `insufficient_reason`, and a plain-language hypothesis and caveat ending in *"this is a limit of the data, not a finding that the cause is absent."* It is not a fourth strength label; the scale in `src/strength.py` is unchanged and `strength.is_insufficient()` is the one place that reads the flag. The reasons:
+
+| Reason | When |
+|---|---|
+| `no_marketing_data` | The marketing table has no rows for one of the two compared months (absent rows are not read as zero spend) |
+| `no_driver_baseline` / `no_driver_in_either_period` | Spend was zero in the prior month, or in both, so no percent change exists |
+| `no_price_baseline` | No product in the category was sold in both months at a non-zero price |
+| `no_comparison_group` | No region, category or channel kept typical spend or prices (this case already returned weak with no value; it now carries the flag too, wording unchanged) |
+| `no_orders_in_segment` / `no_orders_in_comparison_group` | One side of the comparison recorded no orders in either month |
+| `no_strata`, `degenerate_estimate` | Nothing to compare within; an estimate that cannot be put on a log scale |
+
+**No thresholds moved.** Strong, moderate and weak for testable data are as before: the 317 existing tests pass unchanged, the four committed scenarios produce no insufficient evidence, and the 28 new tests in `tests/test_insufficient_data.py` cover the two Layer 9 shapes (marketing table that stops early, categories with no like-for-like product) plus zero prior spend, a channel with zero spend in both months, a region with one or two orders, and comparison groups with no orders.
+
+**Two downstream fixes were needed to keep it honest.** Left alone, `decisions.py` would have listed untestable regions and categories under "Tested and not supported", and `narration.py` would have said marketing "is not supported as an explanation" when it was never tested. Untestable causes now appear under what stays unresolved, and the narration says "neither supported nor ruled out."
+
+**Rerun of the Layer 9 Olist check** (`scripts/verify_layer9.py`, same data, same partial-month handling):
+
+| | Layer 9 | Layer 11 |
+|---|---|---|
+| Calls that ran | 7 of 9 | 9 of 9 |
+| The 6 calls that already worked | 240 pieces | the same 240, identical ids, strengths, values |
+| `marketing_effect` | crashed | 5 regions, all insufficient (`no_marketing_data`) |
+| `price_effect` | crashed | 74 categories: 15 insufficient (`no_price_baseline`), 57 tested and weak, **1 strong, 1 moderate** |
+| `marketing_channel_analysis` | 0 pieces | 0 pieces (unchanged, see limits) |
+| Total | 240 (1 strong, 2 moderate, 237 weak) | 319 (2 strong, 3 moderate, 314 weak) |
+
+The call counts do not simply gain "insufficient" rows: `price_effect` can now run, so the categories that *can* be tested are tested for the first time. That surfaced two real findings under the unchanged rule: `bed_bath_table` (like-for-like price +5.5% vs. +0.5% typical; orders -21.8% against comparison categories, p=0.0001, 507 orders; strong) and `furniture_living_room` (price -3.3%, orders +63.9%, p=0.045, 48 orders; moderate). The pipeline's own pattern check says neither matches the order/order-value pattern a price change predicts, and both are associations from one month. The Layer 9 statement that no strong causal-sounding claim appeared applied to the tools that ran then; it does not carry over to `price_effect`. Also note the Olist adapter fills product cost with a placeholder zero, so any scenario projection built on these two would not be meaningful.
 
 ## What was verified, layer by layer
 
@@ -138,6 +170,11 @@ On the synthetic dataset (45% cut to paid marketing in North, 10% price rise on 
 
 ## Known limits (full detail)
 
+- **Insufficient data (Layer 11):** `marketing_effect`, `price_effect` and `marketing_channel_analysis` return insufficient-data Evidence for comparisons they cannot make (see the Layer 11 section) rather than raising. Shapes that still produce a result rather than an insufficient flag:
+  - A cell with one or two orders in a month does not error. It is graded by the existing small-sample rule (fewer than 30 orders lowers the label one level), so a very large, significant drop on a tiny cell can still come out moderate, never strong. Turning tiny cells into insufficient data would be a rule change and was not made.
+  - An order count of zero on one side (200 to 0) is estimated with a 0.5 continuity correction, as before; only "no orders on either compared month" is insufficient.
+  - `marketing_channel_analysis` treats a marketing table with no rows for only the latest month as zero spend (-100% in every region), where `marketing_effect` reports insufficient data; and when no channel has any spend in either month it returns no evidence at all rather than a flagged entry. Both are unchanged behaviour, not crashes.
+  - Fewer than two months of orders still raises (as in `baseline_trend`), and missing required columns are the upload validator's job.
 - Follow-up questions have no memory of earlier ones in a session ("and South?" doesn't carry over). Offline retrieval is keyword-based. In live mode the guardrail checks figures and cited ids, not whether the model's claim about them is right.
 - Follow-ups cover evidence only, not decision options or projections.
 - The decision log is a local file — doesn't persist on a hosted deployment with an ephemeral disk. The investigation report is Markdown, so it carries findings but not charts.

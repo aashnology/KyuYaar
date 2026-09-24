@@ -32,6 +32,12 @@ The difference of the two log effects is tested with the usual normal
 approximation. The two sets of orders do not overlap, so the effects are
 independent.
 
+A cell whose test cannot be run (no spend in the channel in that region in
+either month, no spend to measure a change from, no comparison regions, no
+orders on one side) gets an insufficient-data Evidence instead of an error, the
+same way effects.py does. The specificity check is optional detail: when it
+cannot be computed it is left out rather than failing the cell.
+
 Nothing here establishes cause. A spend change and an order change in the same
 month leave room for something else that changed at the same time, and
 channel attribution adds its own uncertainty; both are stated on the evidence.
@@ -44,8 +50,9 @@ import pandas as pd
 from scipy import stats
 
 from effects import (
-    MATERIAL_SPEND_CHANGE, _TIMING_CAVEAT, _adjusted_order_effect, _grade,
-    _last_two_periods, _p_text, _pct, _pick_controls, _signed, _sorted,
+    MATERIAL_SPEND_CHANGE, _TIMING_CAVEAT, InsufficientData, _adjusted_order_effect,
+    _grade, _insufficient_caveats, _insufficient_details, _last_two_periods, _p_text,
+    _pct, _pick_controls, _signed, _sorted, _undefined_change_reason,
 )
 from evidence import Evidence, _downgrade_if_small_sample
 
@@ -93,6 +100,8 @@ def _quiet_regions(spend_change, regions, target):
 def _log_effect(effect_pct, ci_low_pct, ci_high_pct):
     """Pooled log rate ratio and its standard error, recovered from the
     percent-scale effect and 95% interval that effects.py returns."""
+    if min(effect_pct, ci_low_pct, ci_high_pct) <= -100 or not math.isfinite(ci_high_pct):
+        raise InsufficientData("degenerate_estimate", "the estimated order change is not a usable percentage")
     pooled = math.log1p(effect_pct / 100)
     se = (math.log1p(ci_high_pct / 100) - math.log1p(ci_low_pct / 100)) / (2 * 1.96)
     return pooled, se
@@ -142,17 +151,23 @@ def _specificity(orders, region, channel, controls, cell_fit, gap, period, last,
     channels, both measured against the same comparison regions."""
     in_other = (orders[region_col] == region) & (orders[channel_col] != channel)
     in_other_ctl = orders[region_col].isin(controls) & (orders[channel_col] != channel)
-    others = sorted(orders.loc[in_other, channel_col].unique())
+    others = sorted(orders.loc[in_other, channel_col].dropna().unique())
     if not others or not in_other.any():
         return None
 
-    eo, lo, hi, _, p_o, _, _ = _adjusted_order_effect(
-        orders, in_other, in_other_ctl, "category", period, last, prior
-    )
-    pooled_c, se_c = cell_fit
-    pooled_o, se_o = _log_effect(eo, lo, hi)
+    try:
+        eo, lo, hi, _, p_o, _, _ = _adjusted_order_effect(
+            orders, in_other, in_other_ctl, "category", period, last, prior
+        )
+        pooled_c, se_c = cell_fit
+        pooled_o, se_o = _log_effect(eo, lo, hi)
+    except InsufficientData:
+        return None
+    combined = math.sqrt(se_c ** 2 + se_o ** 2)
+    if not math.isfinite(combined) or combined <= 0:
+        return None
     diff = pooled_c - pooled_o
-    z = diff / math.sqrt(se_c ** 2 + se_o ** 2)
+    z = diff / combined
     p_gap = _two_sided(z)
 
     expected = -1 if gap < 0 else 1            # a spend cut should lower orders, an increase raise them
@@ -199,12 +214,15 @@ def marketing_channel_analysis(orders, marketing, region_col="region", channel_c
     whose spend moved, details also carry the specificity check (is the loss
     concentrated in this channel, or region-wide?) and the efficiency check
     (cost per attributed order), each with a ready-made sentence.
+
+    A cell that cannot be tested returns an insufficient-data Evidence (see
+    effects.py) rather than raising.
     """
     if channel_col not in orders.columns:
         raise ValueError(f"orders needs a '{channel_col}' column for channel analysis")
 
     period, last, prior = _last_two_periods(orders)
-    regions = sorted(orders[region_col].unique())
+    regions = sorted(orders[region_col].dropna().unique())
     spend = _spend_table(marketing, last, prior)
     paid = sorted({c for (c, _), (a, b) in spend.items() if a + b > 0})
     if not paid:
@@ -228,18 +246,29 @@ def marketing_channel_analysis(orders, marketing, region_col="region", channel_c
             n_prior = int((in_cell & (period == prior)).sum())
             n_last = int((in_cell & (period == last)).sum())
 
+            insufficient = _undefined_change_reason(
+                f"{channel} spend in {region}", spend_prior, spend_last, str(prior), str(last)
+            )
+            if insufficient is None and not controls:
+                insufficient = (
+                    "no_comparison_group",
+                    "no region kept typical spend in every paid channel, so there is no "
+                    "comparison group for this channel and region",
+                )
+            if insufficient is None:
+                try:
+                    effect, ci_lo, ci_hi, z, p_value, raw_seg, raw_ctl = _adjusted_order_effect(
+                        orders, in_cell, in_ctl, "category", period, last, prior
+                    )
+                except InsufficientData as exc:
+                    insufficient = (exc.code, exc.reason)
+
             caveats, pattern, efficiency = [], None, None
-            if not controls:
+            if insufficient is not None:
                 effect = ci_lo = ci_hi = z = raw_seg = raw_ctl = float("nan")
                 p_value, strength = 1.0, "weak"
-                caveats.append(
-                    "no region kept typical spend in every paid channel, so there is no "
-                    "comparison group for this channel and region"
-                )
+                caveats.extend(_insufficient_caveats(*insufficient))
             else:
-                effect, ci_lo, ci_hi, z, p_value, raw_seg, raw_ctl = _adjusted_order_effect(
-                    orders, in_cell, in_ctl, "category", period, last, prior
-                )
                 gap = own_change - typical
                 sign_ok = moved and ((gap < 0 and effect < 0) or (gap > 0 and effect > 0))
                 strength = _grade(moved, sign_ok, effect, p_value)
@@ -259,16 +288,24 @@ def marketing_channel_analysis(orders, marketing, region_col="region", channel_c
                     caveats += [_TIMING_CAVEAT, _ATTRIBUTION_CAVEAT]
 
                 if moved:
-                    pattern = _specificity(
-                        orders, region, channel, controls, _log_effect(effect, ci_lo, ci_hi), gap,
-                        period, last, prior, region_col, channel_col, effect,
-                    )
+                    try:
+                        pattern = _specificity(
+                            orders, region, channel, controls, _log_effect(effect, ci_lo, ci_hi), gap,
+                            period, last, prior, region_col, channel_col, effect,
+                        )
+                    except InsufficientData:
+                        pattern = None
                     efficiency = _efficiency(channel, spend_prior, spend_last, n_prior, n_last)
 
-            if not controls:
+            if insufficient is not None and insufficient[0] == "no_comparison_group":
                 hypothesis = (
                     f"In {region}, {channel} spend moved {_signed(own_change)}, but no region kept "
                     f"typical spend to compare {channel} orders against"
+                )
+            elif insufficient is not None:
+                hypothesis = (
+                    f"In {region}, {channel} spend cannot be tested as an explanation "
+                    f"(insufficient data: {insufficient[1]})"
                 )
             elif moved:
                 kind = "cut" if own_change < typical else "increase"
@@ -284,7 +321,30 @@ def marketing_channel_analysis(orders, marketing, region_col="region", channel_c
                     f"changed {_signed(effect)} relative to regions with typical {channel} spend"
                 )
 
-            has_fit = bool(controls)
+            has_fit = insufficient is None
+            details = {
+                "period": str(last), "prior_period": str(prior),
+                "driver": "channel_spend",
+                "region": region, "channel": channel,
+                "driver_moved": bool(moved),
+                "driver_change_pct": None if math.isnan(own_change) else round(own_change, 1),
+                "driver_typical_change_pct": round(typical, 1),
+                "control_segments": controls,
+                "spend_prior": round(spend_prior, 2), "spend_last": round(spend_last, 2),
+                "orders_prior": n_prior, "orders_last": n_last,
+                "raw_orders_change_pct": round(raw_seg, 1) if has_fit else None,
+                "control_orders_change_pct": round(raw_ctl, 1) if has_fit else None,
+                "ci_low_pct": round(ci_lo, 1) if has_fit else None,
+                "ci_high_pct": round(ci_hi, 1) if has_fit else None,
+                "z": round(z, 2) if has_fit else None,
+                "p_value": float(f"{p_value:.3g}") if has_fit else None,
+                "p_value_text": _p_text(p_value) if has_fit else None,
+                "channel_pattern": pattern,
+                "efficiency": efficiency,
+            }
+            if insufficient is not None:
+                details.update(_insufficient_details(*insufficient))
+
             results.append(Evidence(
                 id=f"chan_{region}_{channel}",
                 hypothesis=hypothesis,
@@ -296,26 +356,7 @@ def marketing_channel_analysis(orders, marketing, region_col="region", channel_c
                 strength=strength,
                 sample_size=n_last,
                 caveats=caveats,
-                details={
-                    "period": str(last), "prior_period": str(prior),
-                    "driver": "channel_spend",
-                    "region": region, "channel": channel,
-                    "driver_moved": bool(moved),
-                    "driver_change_pct": None if math.isnan(own_change) else round(own_change, 1),
-                    "driver_typical_change_pct": round(typical, 1),
-                    "control_segments": controls,
-                    "spend_prior": round(spend_prior, 2), "spend_last": round(spend_last, 2),
-                    "orders_prior": n_prior, "orders_last": n_last,
-                    "raw_orders_change_pct": round(raw_seg, 1) if has_fit else None,
-                    "control_orders_change_pct": round(raw_ctl, 1) if has_fit else None,
-                    "ci_low_pct": round(ci_lo, 1) if has_fit else None,
-                    "ci_high_pct": round(ci_hi, 1) if has_fit else None,
-                    "z": round(z, 2) if has_fit else None,
-                    "p_value": float(f"{p_value:.3g}") if has_fit else None,
-                    "p_value_text": _p_text(p_value) if has_fit else None,
-                    "channel_pattern": pattern,
-                    "efficiency": efficiency,
-                },
+                details=details,
             ))
 
     return _sorted(results)

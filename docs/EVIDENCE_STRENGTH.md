@@ -54,6 +54,14 @@ Rules that apply to every tool:
   really changed contaminate its own control group.
 - **Small samples are downgraded.** Fewer than 30 orders lowers the label by one
   level, and says so.
+- **Insufficient data is not a fourth label.** When a cause test cannot be run at
+  all (no marketing rows for one of the compared months, no spend or no
+  like-for-like product to measure a change from, no orders on one side of the
+  comparison), the tool returns "weak" Evidence with no value and
+  `details["insufficient_data"]` set, with the reason in plain words. Weak keeps
+  it out of every decision option; the flag (`strength.is_insufficient`) keeps it
+  out of "tested and not supported", because nothing was tested. This changes
+  no threshold for data that can be tested.
 - **Unstable shares are not ranked.** If the overall change is under 10%,
   `segment_breakdown` marks every segment weak, because dividing by a near-zero
   change makes the shares meaningless.

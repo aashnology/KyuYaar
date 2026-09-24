@@ -41,3 +41,14 @@ def weakest(labels) -> str:
     """The lowest level among `labels`, or 'n/a' when there are none."""
     labels = [label_of(x) for x in labels]
     return min(labels, key=STRENGTH_ORDER.index) if labels else "n/a"
+
+
+def is_insufficient(evidence) -> bool:
+    """True when a cause-testing tool could not run its comparison on this data.
+
+    Such evidence is graded "weak" so it can never support a decision option,
+    but it is not a tested-and-weak result: nothing was tested, so it must not
+    be reported as "no cause found". Tools mark it with
+    details["insufficient_data"]; the reason is in details["insufficient_reason"].
+    """
+    return bool(evidence.details.get("insufficient_data"))
