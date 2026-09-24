@@ -2,6 +2,10 @@
 
 AI that investigates before it recommends.
 
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://kyuyaar.streamlit.app/)
+
+**Live demo:** https://kyuyaar.streamlit.app/
+
 Most dashboards tell a business owner *what* changed — revenue dropped, orders fell, a channel underperformed. Almost none tell them *why*, and the tools that try tend to generate a confident-sounding explanation with no real evidence behind it.
 
 KyuYaar is built for small businesses, student ventures, and small organizations that have operational data but no dedicated analyst. Given a question like "revenue dropped last month — why, and what should I do?", it runs a real investigation: checks the trend, breaks it down by segment, tests it against marketing and pricing, and builds an evidence chain — each hypothesis tagged with how strong the supporting evidence actually is. Where the data doesn't clearly support a conclusion, it says so rather than guessing.
