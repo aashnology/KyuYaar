@@ -9,12 +9,16 @@ error that says what to fix, or a warning that says exactly what was done
 touched. A few rows that cannot be used are dropped and counted; a large share
 is treated as a sign the wrong file was uploaded.
 
+Free-text labels (region, category, channel, segment) are treated as untrusted:
+over-length values are unusable rows, and instruction-like values reject the file.
+
 Nothing here estimates or fills in a value.
 """
 
 import difflib
 import io
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,6 +57,27 @@ MIN_MONTHS = 3            # fewer months cannot be compared at all
 COMFORTABLE_MONTHS = 8    # earlier month-on-month changes needed to judge "normal" is 6
 MAX_ORDERS = 500_000
 _EXAMPLES = 3
+
+# Region, category, channel and segment names are free text from the upload and
+# end up inside the evidence the model reads. Real names are short, so a
+# longer value is treated as an unusable row. A value that reads like an
+# instruction to an AI system is not a name at all: the file is rejected. The
+# list is deliberately short and literal; it catches obvious phrasing, and the
+# prompt boundary plus the numeric guardrail cover the rest.
+MAX_TEXT_LENGTH = 60
+_INJECTION_PATTERNS = [re.compile(p, re.IGNORECASE) for p in (
+    r"\b(ignore|disregard|forget|override|bypass)\b.{0,40}\b(rules?|instructions?|prompts?|guidelines?|guardrails?|constraints?|above|previous|prior)\b",
+    r"\b(system|developer)\s+(prompt|message|instructions?)\b",
+    r"\bnew\s+instructions?\b",
+    r"\byou\s+are\s+now\b",
+    r"\bact\s+as\s+(a|an|if)\b",
+    r"\bpretend\s+(to\s+be|you)\b",
+    r"\b(reveal|print|repeat|show)\b.{0,30}\b(prompt|instructions?)\b",
+    r"\bjailbreak\b",
+    r"^\s*(system|assistant|user|human)\s*:",
+    r"</?\s*(system|assistant|user|tool|instructions?)\b",
+    r"\[/?inst\]|<\|[^|]{0,30}\|>",
+)]
 
 
 class DataValidationError(ValueError):
@@ -129,6 +154,25 @@ def _examples(values):
     return ", ".join(repr(v) for v in vals) if vals else "blank values"
 
 
+def _reads_like_instruction(text):
+    folded = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", str(text))).lower()
+    return any(p.search(folded) for p in _INJECTION_PATTERNS)
+
+
+def _screen_labels(name, col, s, result):
+    """Record an error when any value in a text column reads like an instruction."""
+    flagged = sorted(v for v in s.dropna().unique() if _reads_like_instruction(v))
+    if not flagged:
+        return
+    n_rows = int(s.isin(flagged).sum())
+    shown = ", ".join(repr(v if len(v) <= 40 else v[:40] + "...") for v in flagged[:_EXAMPLES])
+    result.errors.append(
+        f"{name}.csv: '{col}' has {n_rows} row(s) with text that reads like an instruction to an AI "
+        f"system (for example {shown}). Region, category, channel and segment values must be plain "
+        f"names, so the file was not loaded. Rename or remove those values and upload it again."
+    )
+
+
 def _check_columns(name, frame, result):
     """Missing required columns, with a suggestion when a close name exists."""
     spec = SCHEMA[name]
@@ -175,6 +219,9 @@ def _coerce(name, frame, result):
             frame[col] = s.astype(object)
             if required:
                 flag(blank, f"blank {col}")
+            if kind == "text":
+                _screen_labels(name, col, s, result)
+                flag(s.str.len() > MAX_TEXT_LENGTH, f"{col} is longer than {MAX_TEXT_LENGTH} characters")
         elif kind == "date":
             parsed = pd.to_datetime(s, errors="coerce")
             if required:
