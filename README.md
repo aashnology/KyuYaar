@@ -72,9 +72,10 @@ The investigation can run on a live model or fully offline:
 |---|---|
 | `GEMINI_API_KEY` set (free tier works) | Gemini, default `gemini-flash-latest` |
 | `ANTHROPIC_API_KEY` set | Claude, default `claude-sonnet-5` |
+| `FEATHERLESS_API_KEY` set (with `KYUYAAR_PROVIDER=featherless`, or on its own) | [Featherless AI](https://featherless.ai) open-weight models over its OpenAI-compatible API, default `Qwen/Qwen3-32B` |
 | neither | offline: same tools, deterministic templates instead of model narration |
 
-`KYUYAAR_PROVIDER` forces a choice when both keys are present; `KYUYAAR_MODEL` overrides the default model. A failed live call finishes the investigation offline and says so.
+`KYUYAAR_PROVIDER` (`gemini`, `anthropic` or `featherless`) forces a choice when several keys are present; `KYUYAAR_MODEL` overrides the default model. A failed live call finishes the investigation offline and says so.
 
 ```bash
 python scripts/check_live.py       # one real investigation; reports whether the model drove it

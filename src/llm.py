@@ -7,12 +7,14 @@ results back. Each provider has its own wire format, so each gets a small
 adapter that speaks it. Everything above this module (tools, evidence,
 guardrail, fallbacks) is provider-independent.
 
-Gemini is reached over its REST endpoint with the standard library only, so
-there is no extra dependency and no SDK version to drift.
+Gemini and Featherless AI (an OpenAI-compatible host for open-weight models) are
+reached over their REST endpoints with the standard library only, so there is
+no extra dependency and no SDK version to drift.
 """
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -21,6 +23,8 @@ from dataclasses import dataclass, field
 ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-5"
 GEMINI_DEFAULT_MODEL = "gemini-flash-latest"
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+FEATHERLESS_DEFAULT_MODEL = "Qwen/Qwen3-32B"     # a family Featherless documents for native tool calling
+FEATHERLESS_ENDPOINT = "https://api.featherless.ai/v1/chat/completions"
 
 
 class LLMError(RuntimeError):
@@ -109,6 +113,8 @@ def gemini_error(status, body: bytes) -> LLMError:
         err = json.loads(body).get("error", {}) or {}
     except Exception:
         pass
+    if not isinstance(err, dict):
+        err = {"message": str(err)}
     message = (err.get("message") or "").split(" For more information")[0].strip()
     retry_after, daily = None, False
     for detail in err.get("details") or []:
@@ -191,6 +197,9 @@ class GeminiAdapter:
         url = GEMINI_ENDPOINT.format(model=self.model)
         headers = {"Content-Type": "application/json", "x-goog-api-key": self._api_key}
         payload = {**self._static, "contents": self.contents}
+        return self._send(url, headers, payload)
+
+    def _send(self, url, headers, payload):
         delays = list(self._retry_delays)
         while True:
             self._pace()
@@ -250,24 +259,108 @@ class GeminiAdapter:
         self.contents.append({"role": "user", "parts": parts})
 
 
+# ----------------------------------------------------------- Featherless ---
+
+_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _to_openai_tool(tool):
+    """Translate an Anthropic-style tool spec into an OpenAI-style function tool."""
+    schema = tool.get("input_schema", {})
+    params = {"type": "object", "properties": schema.get("properties") or {}}
+    if schema.get("required"):
+        params["required"] = schema["required"]
+    return {"type": "function",
+            "function": {"name": tool["name"], "description": tool["description"], "parameters": params}}
+
+
+class FeatherlessAdapter(GeminiAdapter):
+    """Featherless AI: open-weight models behind an OpenAI-style chat completions API.
+
+    Retry, pacing and error handling are shared with the Gemini adapter; only the
+    wire format differs.
+    """
+
+    provider = "featherless"
+    display = "Featherless"
+
+    def __init__(self, api_key, model, post=None, min_interval=None, **kw):
+        if min_interval is None:
+            min_interval = float(os.environ.get("KYUYAAR_MIN_INTERVAL", "0"))
+        super().__init__(api_key, model, post=post, min_interval=min_interval, **kw)
+        self.messages = []
+
+    def start(self, system, tools, question):
+        self._tools = [_to_openai_tool(t) for t in tools] if tools else []
+        self.messages = [{"role": "system", "content": system}, {"role": "user", "content": question}]
+
+    def _request(self):
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._api_key}",
+            "HTTP-Referer": "https://github.com/aashnology/KyuYaar",
+            "X-Title": "KyuYaar",
+        }
+        payload = {"model": self.model, "messages": self.messages, "max_tokens": 1500}
+        if self._tools:
+            payload["tools"] = self._tools
+        return self._send(FEATHERLESS_ENDPOINT, headers, payload)
+
+    def next_turn(self) -> Turn:
+        data = self._request()
+        choices = data.get("choices") or []
+        if not choices:
+            raise LLMError("empty response (no choices returned)")
+        message = choices[0].get("message") or {}
+        content = _THINK_BLOCK.sub("", message.get("content") or "").strip()
+
+        calls, raw_calls = [], []
+        for i, tc in enumerate(message.get("tool_calls") or []):
+            fn = tc.get("function") or {}
+            call_id = tc.get("id") or f"call_{len(self.messages)}_{i}"
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except ValueError:
+                args = {}
+            calls.append(ToolCall(call_id, fn.get("name", ""), args if isinstance(args, dict) else {}))
+            raw_calls.append({"id": call_id, "type": "function",
+                              "function": {"name": fn.get("name", ""), "arguments": fn.get("arguments") or "{}"}})
+
+        entry = {"role": "assistant", "content": content}
+        if raw_calls:
+            entry["tool_calls"] = raw_calls
+        self.messages.append(entry)
+        return Turn(texts=[content] if content else [], tool_calls=calls)
+
+    def add_results(self, results):
+        for r in results:
+            body = json.dumps({"error": r.content}) if r.is_error else r.content
+            self.messages.append({"role": "tool", "tool_call_id": r.call_id, "content": body})
+
+
 # --------------------------------------------------------------- factory ---
 
 def make_client(provider=None, model=None):
     """Return an adapter for the first provider that has a key, else None.
 
-    KYUYAAR_PROVIDER ("anthropic" or "gemini") forces the choice;
+    KYUYAAR_PROVIDER ("anthropic", "gemini" or "featherless") forces the choice;
     KYUYAAR_MODEL overrides the default model of whichever provider is used.
+    Featherless is only picked automatically when no other provider has a key.
     """
     provider = (provider or os.environ.get("KYUYAAR_PROVIDER") or "").lower()
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
     gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    featherless_key = os.environ.get("FEATHERLESS_API_KEY")
     model = model or os.environ.get("KYUYAAR_MODEL")
 
-    if provider not in ("anthropic", "gemini"):
-        provider = "anthropic" if anthropic_key else "gemini" if gemini_key else ""
+    if provider not in ("anthropic", "gemini", "featherless"):
+        provider = ("anthropic" if anthropic_key else "gemini" if gemini_key
+                    else "featherless" if featherless_key else "")
 
     if provider == "gemini" and gemini_key:
         return GeminiAdapter(gemini_key, model or GEMINI_DEFAULT_MODEL)
+    if provider == "featherless" and featherless_key:
+        return FeatherlessAdapter(featherless_key, model or FEATHERLESS_DEFAULT_MODEL)
     if provider == "anthropic" and anthropic_key:
         try:
             import anthropic

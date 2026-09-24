@@ -1,7 +1,7 @@
 """
 One-command check of the live model path.
 
-Set GEMINI_API_KEY (or ANTHROPIC_API_KEY) in your shell first, then run:
+Set GEMINI_API_KEY (or FEATHERLESS_API_KEY with KYUYAAR_PROVIDER=featherless, or ANTHROPIC_API_KEY) in your shell first, then run:
     python scripts/check_live.py
 
 It runs one real investigation and reports whether the model actually drove
@@ -20,7 +20,7 @@ from toolkit import Toolkit
 
 client = make_client()
 if client is None:
-    print("No API key found. Set GEMINI_API_KEY (PowerShell: $env:GEMINI_API_KEY=\"...\") and retry.")
+    print("No API key found. Set GEMINI_API_KEY or FEATHERLESS_API_KEY (PowerShell: $env:GEMINI_API_KEY=\"...\") and retry.")
     sys.exit(1)
 
 print(f"Provider: {client.provider}   model: {client.model}")

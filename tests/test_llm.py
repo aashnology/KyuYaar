@@ -246,7 +246,7 @@ def test_guardrail_applies_to_gemini_prose_too(toolkit):
 
 
 def test_make_client_selection(monkeypatch):
-    for var in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "KYUYAAR_PROVIDER", "KYUYAAR_MODEL"):
+    for var in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "FEATHERLESS_API_KEY", "KYUYAAR_PROVIDER", "KYUYAAR_MODEL"):
         monkeypatch.delenv(var, raising=False)
     assert make_client() is None
 
