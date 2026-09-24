@@ -58,7 +58,7 @@ The statistical methods themselves are described in the module docstrings under 
 | 9 | Real-data validation: `src/adapters/olist.py` maps the real Olist dataset onto the canonical schema; tools run unmodified | done — core evidence tools ran clean on real data; upload gate correctly rejected a real cross-dataset time gap; two tools crashed on real data's sparse tail (fixed in Layer 11, see `DEMO.md`) |
 | 11 | Harden `effects.py` and `channels.py`: comparisons that cannot be made on sparse or messy data return "insufficient data" Evidence instead of raising; no thresholds changed | done; Olist rerun in `DEMO.md` |
 | 12 | Guardrail checks the sign of directional figures, not just their magnitude: a model-written "+12%" is blocked when the matching evidence is -12% | done; tests in `tests/test_guardrail.py` |
-| 13 | Uploaded region, category, channel and segment names treated as untrusted: 60-character cap, instruction-phrasing deny-list, explicit "literal labels" line in the system prompt | done; 51 behavioral tests in `tests/test_untrusted_labels.py`; live-model spot-check (`scripts/check_live_injection.py`) attempted, provider unavailable, not yet passed |
+| 13 | Uploaded region, category, channel and segment names treated as untrusted: 60-character cap, instruction-phrasing deny-list, explicit "literal labels" line in the system prompt | done; 51 behavioral tests in `tests/test_untrusted_labels.py`; live spot-check (`scripts/check_live_injection.py`) passed once on `gemini-3.5-flash-lite`, Sept 25, 2026 |
 
 ## Run it
 
