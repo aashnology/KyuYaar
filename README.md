@@ -12,6 +12,19 @@ KyuYaar doesn't decide anything on its own. It surfaces evidence-backed options,
 
 See [`DEMO.md`](DEMO.md) for screenshots and a full walkthrough of what the system finds when run.
 
+## Who it's for and why it matters
+
+A small shop, a student venture or a community organisation usually has the data to answer "why did revenue drop?" but not an analyst to answer it. The common substitutes are a dashboard that shows *that* something fell, or a chatbot that produces a confident story with nothing behind it. Acting on the wrong story is expensive for a thin-margin business: restoring ad spend that wasn't the cause, or cutting a price that wasn't the problem.
+
+KyuYaar is built to make that kind of mistake harder:
+
+- **Every figure is computed, not generated.** Model-written text is checked against the evidence and discarded if it states a number, or a direction, the data doesn't support.
+- **Uncertainty is shown, not smoothed over.** Weak evidence stays labelled weak and gets no recommended action; a month with no cause in the data ends in "the data does not support a cause". Synthetic scenarios with a known answer (including a flat month and an unexplained fall) are checked over many random draws, and the tools were also run end to end on real Olist e-commerce data.
+- **The decision stays with the person.** Options come with their assumptions and risks, projections show their arithmetic, and nothing is chosen for you.
+- **Your data is treated with care.** The model receives the question and the computed evidence (aggregate figures and region, category and channel names), not the uploaded rows, and no order, customer or product ids. Uploaded names are screened and treated as labels, never as instructions.
+
+What this is not: it has been built and tested on one investigation type, and evidence is association, not proof of cause. See *Known limits*.
+
 ## How an investigation works
 
 ```
@@ -56,6 +69,7 @@ The statistical methods themselves are described in the module docstrings under 
 | — | Hardening before recommendation logic: one strength scale, the strength rule documented, end-to-end determinism proof, off-script questions declined | done |
 | 8 | `recommend()`: ranks the actionable options by projected gross profit adjusted for risk, marks one "Recommended" (or none, if the evidence or the projections don't support it) | done |
 | 9 | Real-data validation: `src/adapters/olist.py` maps the real Olist dataset onto the canonical schema; tools run unmodified | done — core evidence tools ran clean on real data; upload gate correctly rejected a real cross-dataset time gap; two tools crashed on real data's sparse tail (fixed in Layer 11, see `DEMO.md`) |
+| 10 | UI/UX polish: plain-language step names, hover explanations, chart colour presets, scenario waterfall, easier data discovery | done |
 | 11 | Harden `effects.py` and `channels.py`: comparisons that cannot be made on sparse or messy data return "insufficient data" Evidence instead of raising; no thresholds changed | done; Olist rerun in `DEMO.md` |
 | 12 | Guardrail checks the sign of directional figures, not just their magnitude: a model-written "+12%" is blocked when the matching evidence is -12% | done; tests in `tests/test_guardrail.py` |
 | 13 | Uploaded region, category, channel and segment names treated as untrusted: 60-character cap, instruction-phrasing deny-list, explicit "literal labels" line in the system prompt | done; 51 behavioral tests in `tests/test_untrusted_labels.py`; live spot-check (`scripts/check_live_injection.py`) passed once on `gemini-3.5-flash-lite`, Sept 25, 2026 |
@@ -75,7 +89,7 @@ The investigation can run on a live model or fully offline:
 | `ANTHROPIC_API_KEY` set | Claude, default `claude-sonnet-5` |
 | neither | offline: same tools, deterministic templates instead of model narration |
 
-`KYUYAAR_PROVIDER` forces a choice when both keys are present; `KYUYAAR_MODEL` overrides the default model. A failed live call finishes the investigation offline and says so.
+`KYUYAAR_PROVIDER` forces a choice when both keys are present; `KYUYAAR_MODEL` overrides the default model (for example `gemini-3.5-flash-lite` if the default model is busy or rate-limited). A failed live call finishes the investigation offline and says so.
 
 ```bash
 python scripts/check_live.py       # one real investigation; reports whether the model drove it

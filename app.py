@@ -18,7 +18,6 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
@@ -120,14 +119,22 @@ def scroll_to_top():
 
     The script carries a fresh nonce each call. Without it Streamlit sees an
     identical hidden iframe and does not re-run the script on later screens.
+    Cosmetic only: if neither embedding API is available the screen still works.
     """
     st.session_state["_scroll_nonce"] = st.session_state.get("_scroll_nonce", 0) + 1
-    components.html(
+    html = (
         f"<script>/* {st.session_state['_scroll_nonce']} */"
         "const m = window.parent.document.querySelector('[data-testid=stMain]');"
-        "if (m) m.scrollTo({top: 0});</script>",
-        height=0,
+        "if (m) m.scrollTo({top: 0});</script>"
     )
+    try:
+        if hasattr(st, "iframe"):
+            st.iframe(html, height=0)
+        else:  # older Streamlit releases
+            import streamlit.components.v1 as components
+            components.html(html, height=0)
+    except Exception:
+        pass
 
 
 def reset_investigation():
