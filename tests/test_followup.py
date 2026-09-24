@@ -163,6 +163,17 @@ def test_a_figure_the_person_typed_may_be_repeated_back(inv):
     assert other.source == "template" and other.blocked == ["61.7"]
 
 
+def test_a_typed_magnitude_does_not_excuse_a_flipped_sign(inv):
+    question = "Did North orders change by 38.6%?"
+    flipped = answer_question(question, inv, client=FakeAdapter(
+        "North orders changed +38.6% against regions with typical spend [stat_marketing_North]."))
+    assert flipped.source == "template" and flipped.blocked == ["+38.6"]
+    # The same figure with the sign the evidence gives it is fine, typed or not.
+    honest = answer_question(question, inv, client=FakeAdapter(
+        "North orders changed -38.6% against regions with typical spend [stat_marketing_North]."))
+    assert honest.source == "llm" and not honest.blocked
+
+
 def test_model_failure_degrades_to_the_template_answer_and_says_so(inv):
     answer = answer_question("Why did North drop?", inv, client=FakeAdapter(error=RuntimeError("quota")))
     assert answer.source == "template" and answer.evidence_ids

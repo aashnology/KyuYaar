@@ -167,6 +167,7 @@ On the synthetic dataset (45% cut to paid marketing in North, 10% price rise on 
 - **Determinism:** the same question on the same data gives identical evidence, plan and decision options on every scenario, across Python hash seeds, and under different live-model wording and tool order. Only narration wording may vary (`tests/test_determinism.py`).
 - **Strength scale:** every tool on every scenario emits only the three labels, no decision option is built on weak evidence, and no module keeps its own copy of the actionable threshold (`tests/test_strength.py`, rule in `docs/EVIDENCE_STRENGTH.md`).
 - **Off-script questions:** a customer count, a forecast or a profit question is declined with a reason before any tool or model call (`tests/test_question.py`).
+- **Guardrail direction (Layer 12):** a model-written figure with an explicit sign ("+12%") is blocked when the evidence field it matches points the other way (-12%). Only directional fields are sign-checked (headline value, baseline, percentage and point changes, dollar effects, confidence bounds, test statistics); counts, sample sizes, p-values and spend levels are matched on magnitude. A sweep over real evidence on every scenario fails if any figure that goes negative is filed under a name the guardrail treats as sign-free (`tests/test_guardrail.py`). A figure the person typed into a follow-up excuses an invented magnitude but not a flipped sign (`tests/test_followup.py`).
 
 ## Known limits (full detail)
 
@@ -175,7 +176,7 @@ On the synthetic dataset (45% cut to paid marketing in North, 10% price rise on 
   - An order count of zero on one side (200 to 0) is estimated with a 0.5 continuity correction, as before; only "no orders on either compared month" is insufficient.
   - `marketing_channel_analysis` treats a marketing table with no rows for only the latest month as zero spend (-100% in every region), where `marketing_effect` reports insufficient data; and when no channel has any spend in either month it returns no evidence at all rather than a flagged entry. Both are unchanged behaviour, not crashes.
   - Fewer than two months of orders still raises (as in `baseline_trend`), and missing required columns are the upload validator's job.
-- Follow-up questions have no memory of earlier ones in a session ("and South?" doesn't carry over). Offline retrieval is keyword-based. In live mode the guardrail checks figures and cited ids, not whether the model's claim about them is right.
+- Follow-up questions have no memory of earlier ones in a session ("and South?" doesn't carry over). Offline retrieval is keyword-based. In live mode the guardrail checks figures and cited ids, not whether the model's claim about them is right. It checks a sign the model writes, not a direction word: "orders rose 39%" with no sign token still passes against a -39% finding.
 - Follow-ups cover evidence only, not decision options or projections.
 - The decision log is a local file — doesn't persist on a hosted deployment with an ephemeral disk. The investigation report is Markdown, so it carries findings but not charts.
 - Layer 5 projections rest on the assumed recovery share; the data measures the drop, not how much comes back.

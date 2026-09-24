@@ -241,7 +241,8 @@ def _live_answer(question, inv, adapter) -> Answer:
     # Figures the person typed themselves may be repeated back.
     typed = {round(v, d) for v, d, _ in numbers_in(question)}
     check = check_text(text, inv.evidence)
-    unsupported = [t for t in check.unsupported if not any(
+    # A typed figure excuses a made-up magnitude, never a sign flipped on a real one.
+    unsupported = [t for t in check.unsupported if t in check.sign_flipped or not any(
         abs(float(t.replace(",", "").lstrip("+-\u2212")) - v) < 1e-9 for v in typed)]
     if unknown or unsupported:
         answer = template_answer(question, inv.evidence)
